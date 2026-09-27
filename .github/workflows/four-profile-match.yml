@@ -25,7 +25,7 @@ jobs:
           import cv2,numpy as np,requests,re,json
           UA={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36'}
           S=requests.Session(); S.headers.update(UA)
-          pids=[3617694,1804316,1815778,2109258,1675610,2299293,2856549,2803512,2011581,3277706,2231626,2283511,2240219,2392881,1994894,4501001,3112783,1223327,1648602,2481468,1783134,1122726,2989141,3384131,3413612,3107086,3496568]
+          pids=[2517866,2485412,2388683,1754330,2380235,2492826,2515312,2152515,2925737,3262808,3477210,3360772]
           refs={
             'color':'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/03_modelmayhem_color.png',
             'bw':'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/04_modelmayhem_bw.png'
