@@ -1,0 +1,77 @@
+name: Lenso ModelMayhem reverse search
+
+on:
+  push:
+    paths:
+      - ".github/workflows/lenso-search.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Playwright
+        run: |
+          npm install playwright@1.55.0 >/dev/null 2>&1
+          npx playwright install --with-deps chromium >/dev/null 2>&1
+      - name: Search lenso public UI
+        run: |
+          node <<'NODE'
+          const { chromium } = require('playwright');
+          const files=['03_modelmayhem_color.png','04_modelmayhem_bw.png'];
+          (async()=>{
+            const browser=await chromium.launch({headless:true});
+            const ctx=await browser.newContext({
+              viewport:{width:1440,height:1000},
+              userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
+            });
+            for(const file of files){
+              const page=await ctx.newPage();
+              page.setDefaultTimeout(20000);
+              const api=[];
+              page.on('response',async r=>{
+                const u=r.url(), ct=r.headers()['content-type']||'';
+                if(/lenso|eyematch/i.test(u) && /json/i.test(ct)){
+                  try{
+                    const t=await r.text();
+                    if(/result|sourceUrl|imageUrl|confidence|search/i.test(t)) api.push({url:u,status:r.status(),body:t.slice(0,60000)});
+                  }catch{}
+                }
+              });
+              await page.goto('https://lenso.ai/en',{waitUntil:'domcontentloaded',timeout:60000}).catch(e=>console.log('GOTO_ERR',file,String(e)));
+              await page.waitForTimeout(3000);
+              for(const sel of ['button:has-text("Accept")','button:has-text("Accept all")','#onetrust-accept-btn-handler']){
+                const el=page.locator(sel).first();
+                if(await el.isVisible().catch(()=>false)) await el.click({force:true}).catch(()=>{});
+              }
+              const inputs=page.locator('input[type=file]');
+              console.log('FILE_INPUTS',file,await inputs.count());
+              if(await inputs.count()){
+                await inputs.first().setInputFiles(file);
+              }else{
+                console.log('NO_FILE_INPUT',file);
+                console.log((await page.locator('body').innerText().catch(()=>'' )).slice(0,8000));
+                await page.close(); continue;
+              }
+              await page.waitForTimeout(25000);
+              console.log('FINAL',file,page.url());
+              console.log('TITLE',file,await page.title().catch(()=>''));
+              const body=await page.locator('body').innerText().catch(()=>'');
+              console.log('BODY',file,body.slice(0,30000).replace(/\n/g,' | '));
+              const links=await page.locator('a').evaluateAll(ns=>ns.map(a=>({text:(a.innerText||a.textContent||'').trim().replace(/\s+/g,' ').slice(0,250),href:a.href||''})).filter(x=>x.href));
+              const mm=links.filter(x=>/modelmayhem/i.test(x.href+' '+x.text));
+              console.log('MM_LINKS',file,JSON.stringify(mm.slice(0,200)));
+              console.log('API',file,JSON.stringify(api.slice(0,100)));
+              await page.close();
+            }
+            await browser.close();
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
