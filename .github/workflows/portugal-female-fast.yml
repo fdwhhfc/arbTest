@@ -1,0 +1,96 @@
+name: Fast Portugal female portfolio scan
+
+on:
+  push:
+    paths:
+      - ".github/workflows/portugal-female-fast.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: pip install -q requests beautifulsoup4 opencv-python-headless numpy
+      - name: Scan
+        run: |
+          python - <<'PY'
+          import cv2, numpy as np, requests, re, json
+          from bs4 import BeautifulSoup
+
+          S=requests.Session(); S.headers.update({'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36'})
+          pages=[
+            'https://www.modelmayhem.com/browse/model/portugal/lisboa-e-vale-do-tejo/lisbon/female%269',
+            'https://www.modelmayhem.com/browse/model/portugal/norte/porto'
+          ]
+          refs={
+            'color':'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/03_modelmayhem_color.png',
+            'bw':'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/04_modelmayhem_bw.png'
+          }
+          def get(u,t=15):
+            r=S.get(u,timeout=t); r.raise_for_status(); return r
+          def dec(b): return cv2.imdecode(np.frombuffer(b,np.uint8),cv2.IMREAD_COLOR)
+          raw={k:dec(get(u).content) for k,u in refs.items()}
+          # Crop off FaceCheck's bottom source bar; also keep a central variant.
+          variants={}
+          for k,im in raw.items():
+            h,w=im.shape[:2]
+            variants[k]=[
+              im,
+              im[:max(40,h-38),:],
+              im[:max(40,h-38),int(w*.08):int(w*.92)]
+            ]
+            print('REF',k,w,h,[x.shape[:2] for x in variants[k]])
+          sift=cv2.SIFT_create(nfeatures=5000)
+          def one(a,b):
+            ga=cv2.cvtColor(a,cv2.COLOR_BGR2GRAY); gb=cv2.cvtColor(b,cv2.COLOR_BGR2GRAY)
+            ka,da=sift.detectAndCompute(ga,None); kb,db=sift.detectAndCompute(gb,None)
+            if da is None or db is None:return (0,0,0.0)
+            good=[m for m,n in cv2.BFMatcher().knnMatch(da,db,k=2) if m.distance<.68*n.distance]
+            inl=0
+            if len(good)>=4:
+              src=np.float32([ka[m.queryIdx].pt for m in good]).reshape(-1,1,2)
+              dst=np.float32([kb[m.trainIdx].pt for m in good]).reshape(-1,1,2)
+              _,mask=cv2.findHomography(src,dst,cv2.RANSAC,3.5)
+              if mask is not None: inl=int(mask.sum())
+            return (len(good),inl,round(inl/max(1,len(good)),3))
+          def score(k,b):
+            vals=[one(a,b) for a in variants[k]]
+            return max(vals,key=lambda x:(x[1],x[0],x[2]))
+
+          ids=set()
+          for p in pages:
+            try: html=get(p).text
+            except Exception as e: print('PAGEERR',p,e); continue
+            ids.update(map(int,re.findall(r'href=["\'](?:https?://www\.modelmayhem\.com)?/(\d{4,10})["\']',html,re.I)))
+          print('IDS='+json.dumps(sorted(ids)))
+          print('IDCOUNT='+str(len(ids)))
+
+          strong=[]
+          for pid in sorted(ids):
+            try: html=get(f'https://www.modelmayhem.com/portfolio/{pid}/viewall').text
+            except: continue
+            urls=list(dict.fromkeys(u.replace('&amp;','&') for u in re.findall(r'https://photos\.modelmayhem\.com/photos/[^"\'<>\s)]+',html,re.I) if re.search(r'\.(?:jpe?g|png)(?:\?|$)',u,re.I)))
+            if not urls: continue
+            bestc=(0,0,0.0,''); bestb=(0,0,0.0,'')
+            for u in urls[:100]:
+              try:
+                im=dec(get(u).content)
+                if im is None: continue
+              except: continue
+              c=score('color',im); b=score('bw',im)
+              if (c[1],c[0],c[2])>(bestc[1],bestc[0],bestc[2]): bestc=(*c,u)
+              if (b[1],b[0],b[2])>(bestb[1],bestb[0],bestb[2]): bestb=(*b,u)
+              if c[1]>=10: strong.append({'pid':pid,'type':'color','url':u,'score':c})
+              if b[1]>=10: strong.append({'pid':pid,'type':'bw','url':u,'score':b})
+            print('BEST='+json.dumps({'pid':pid,'n':len(urls),'color':bestc,'bw':bestb}))
+          strong.sort(key=lambda x:(x['score'][1],x['score'][0]),reverse=True)
+          print('STRONG='+json.dumps(strong[:100]))
+          PY
