@@ -1,4 +1,4 @@
-name: Deep ModelMayhem source search
+name: Fast Yandex ModelMayhem sweep
 
 on:
   push:
@@ -12,98 +12,65 @@ permissions:
 jobs:
   research:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 8
     steps:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
       - name: Install Playwright
         run: |
-          npm install playwright@1.55.0
-          npx playwright install --with-deps chromium
-      - name: Search Yandex deeply for ModelMayhem hits
+          npm install playwright@1.55.0 >/dev/null 2>&1
+          npx playwright install --with-deps chromium >/dev/null 2>&1
+      - name: Sweep Yandex pages quickly
         run: |
           node <<'NODE'
           const { chromium } = require('playwright');
-          const images = {
+          const imgs = {
             color:'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/03_modelmayhem_color.png',
             bw:'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/04_modelmayhem_bw.png'
           };
-
-          function extractState(states) {
-            for (const s of states) {
-              try {
-                const j=JSON.parse(s);
-                if(j?.initialState) return j.initialState;
-              } catch {}
-            }
-            return null;
+          function init(states){
+            for(const s of states){try{const j=JSON.parse(s);if(j?.initialState)return j.initialState}catch{}}
           }
-
-          function collectItems(init) {
+          function items(i){
             const out=[];
-            const ents=init?.serpList?.items?.entities || {};
-            for (const e of Object.values(ents)) {
-              out.push({
-                pos:e.pos ?? null,
-                title:e.snippet?.title || e.alt || '',
-                domain:e.snippet?.domain || '',
-                pageUrl:e.snippet?.url || '',
-                origUrl:e.origUrl || e.viewerData?.preview?.[0]?.url || '',
-                thumb:e.viewerData?.preview?.[0]?.url || '',
-                width:e.origWidth || e.width || null,
-                height:e.origHeight || e.height || null
-              });
-            }
-            const thumbs=init?.cbirSimilar?.thumbs || [];
-            for(let i=0;i<thumbs.length;i++){
-              const e=thumbs[i];
-              out.push({
-                pos:'thumb-'+i,
-                title:e.title || '',
-                domain:e.domain || '',
-                pageUrl:e.linkUrl || e.url || '',
-                origUrl:e.imageUrl || '',
-                thumb:e.thumb?.url || '',
-                width:e.width || null,
-                height:e.height || null
-              });
-            }
+            const ents=i?.serpList?.items?.entities||{};
+            for(const e of Object.values(ents)) out.push({
+              pos:e.pos??null,title:e.snippet?.title||e.alt||'',domain:e.snippet?.domain||'',
+              pageUrl:e.snippet?.url||'',origUrl:e.origUrl||e.viewerData?.preview?.[0]?.url||'',
+              width:e.origWidth||e.width||null,height:e.origHeight||e.height||null
+            });
+            const thumbs=i?.cbirSimilar?.thumbs||[];
+            for(let k=0;k<thumbs.length;k++){const e=thumbs[k];out.push({
+              pos:'thumb-'+k,title:e.title||'',domain:e.domain||'',pageUrl:e.linkUrl||e.url||'',
+              origUrl:e.imageUrl||'',width:e.width||null,height:e.height||null
+            })}
             return out;
           }
-
-          async function getPage(context, label, imageUrl, p, mode, withText) {
-            const page=await context.newPage();
-            const params=new URLSearchParams({
-              rpt:'imageview',
-              cbir_page:mode,
-              url:imageUrl,
-              p:String(p)
-            });
-            if(withText) params.set('text','site:modelmayhem.com');
-            const url='https://yandex.com/images/search?'+params.toString();
-            await page.goto(url,{waitUntil:'domcontentloaded',timeout:60000}).catch(()=>{});
-            await page.waitForTimeout(7000);
-            const states=await page.locator('[data-state]').evaluateAll(ns=>ns.map(n=>n.getAttribute('data-state')).filter(Boolean));
-            const init=extractState(states);
-            const items=collectItems(init);
-            const mm=items.filter(it=>/modelmayhem|photos\.modelmayhem/i.test(JSON.stringify(it)));
-            if(mm.length) console.log('MM='+JSON.stringify({label,p,mode,withText,finalUrl:page.url(),mm}));
+          async function one(ctx,label,img,p,mode,textq){
+            const page=await ctx.newPage();
+            const q=new URLSearchParams({rpt:'imageview',cbir_page:mode,url:img,p:String(p)});
+            if(textq) q.set('text','site:modelmayhem.com');
+            const url='https://yandex.com/images/search?'+q.toString();
+            await page.goto(url,{waitUntil:'domcontentloaded',timeout:30000}).catch(()=>{});
+            await page.waitForTimeout(700);
+            const states=await page.locator('[data-state]').evaluateAll(ns=>ns.map(n=>n.getAttribute('data-state')).filter(Boolean)).catch(()=>[]);
+            const arr=items(init(states));
+            const mm=arr.filter(x=>/modelmayhem|photos\.modelmayhem/i.test(JSON.stringify(x)));
+            if(mm.length) console.log('HIT='+JSON.stringify({label,p,mode,textq,mm}));
             await page.close();
           }
-
           (async()=>{
-            const browser=await chromium.launch({headless:true});
-            const context=await browser.newContext({
-              viewport:{width:1365,height:900},
+            const b=await chromium.launch({headless:true});
+            const ctx=await b.newContext({
+              viewport:{width:1280,height:800},
               userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
             });
-            try {
-              for (const [label,img] of Object.entries(images)) {
-                for (let p=0;p<15;p++) await getPage(context,label,img,p,'similar',false);
-                for (let p=0;p<8;p++) await getPage(context,label,img,p,'similar',true);
-                for (let p=0;p<4;p++) await getPage(context,label,img,p,'sites',false);
-              }
-            } finally { await browser.close(); }
+            for(const [label,img] of Object.entries(imgs)){
+              for(let p=0;p<25;p++) await one(ctx,label,img,p,'similar',false);
+              for(let p=0;p<10;p++) await one(ctx,label,img,p,'similar',true);
+              for(let p=0;p<6;p++) await one(ctx,label,img,p,'sites',false);
+            }
+            await b.close();
           })().catch(e=>{console.error(e);process.exit(1)});
           NODE
