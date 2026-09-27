@@ -55,7 +55,7 @@ jobs:
             'request':'{"blocks":[{"block":"b-page_type_search-by-image__link"}]}'
           }
           urls=[]
-          for name,fn in variants:
+          for name,fn in [x for x in variants if x[0] in ('color-inner','bw-inner')]:
             try:
               with open(fn,'rb') as f:
                 r=sess.post('https://yandex.com/images/search',params=params,files={'upfile':('blob',f,'image/jpeg')},timeout=45)
@@ -103,14 +103,14 @@ jobs:
             const b=await chromium.launch({headless:true});
             const c=await b.newContext({viewport:{width:1280,height:850},userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36'});
             for(const x of items){
-              for(const mode of ['sites','similar']){
-                for(let p=0;p<(mode==='sites'?3:6);p++){
+              for(const mode of ['sites']){
+                for(let p=0;p<20;p++){
                   const pg=await c.newPage();
                   const u=new URL(x.url);
                   u.searchParams.set('cbir_page',mode);
                   u.searchParams.set('p',String(p));
                   await pg.goto(u.toString(),{waitUntil:'domcontentloaded',timeout:50000}).catch(()=>{});
-                  await pg.waitForTimeout(1400);
+                  await pg.waitForTimeout(900);
                   const states=await pg.locator('[data-state]').evaluateAll(ns=>ns.map(n=>n.getAttribute('data-state')).filter(Boolean)).catch(()=>[]);
                   const arr=collect(getState(states));
                   const mm=arr.filter(v=>/modelmayhem|photos\.modelmayhem/i.test(JSON.stringify(v)));
