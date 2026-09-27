@@ -1,4 +1,4 @@
-name: Reverse image research
+name: PBase metadata research
 
 on:
   push:
@@ -12,155 +12,85 @@ permissions:
 jobs:
   research:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install Playwright
-        run: |
-          npm install playwright@1.55.0
-          npx playwright install --with-deps chromium
-
-      - name: Reverse image research
-        env:
-          IMAGE_PATH: 02_alamy_color_watermark.png
-          RAW_URL: https://raw.githubusercontent.com/fdwhhfc/arbTest/master/02_alamy_color_watermark.png
+      - name: Fetch public PBase gallery metadata
         run: |
           node <<'NODE'
-          const { chromium } = require('playwright');
+          const urls = [
+            'https://pbase.com/image_expo/margarida',
+            'https://pbase.com/image_expo/porto',
+            'https://pbase.com/image_expo/portraits'
+          ];
 
-          function around(text, needle, radius = 900) {
-            const out = [];
-            const lower = text.toLowerCase();
-            const target = needle.toLowerCase();
-            let i = 0;
-            while ((i = lower.indexOf(target, i)) !== -1 && out.length < 20) {
-              out.push(text.slice(Math.max(0, i-radius), Math.min(text.length, i+target.length+radius)));
-              i += target.length;
-            }
-            return out;
-          }
-
-          async function acceptCookies(page) {
-            for (const sel of [
-              '#onetrust-accept-btn-handler',
-              'button:has-text("Accept all")',
-              'button:has-text("Accept All")',
-              'button:has-text("Accept")'
-            ]) {
-              const el = page.locator(sel).first();
-              if (await el.isVisible().catch(() => false)) {
-                await el.click({ force: true }).catch(() => {});
-                await page.waitForTimeout(1000);
-                return;
-              }
-            }
-          }
-
-          async function dumpPage(page, label) {
-            console.log(label + '_URL=' + page.url());
-            console.log(label + '_TITLE=' + await page.title().catch(() => ''));
-            const body = await page.locator('body').innerText().catch(() => '');
-            console.log(label + '_TEXT_BEGIN');
-            console.log(body.slice(0, 25000));
-            console.log(label + '_TEXT_END');
-
-            const links = await page.locator('a').evaluateAll(nodes =>
-              nodes.map(a => ({
-                text: (a.innerText || a.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 600),
-                href: a.href || ''
-              }))
-              .filter(x => x.href)
-              .slice(0, 800)
-            );
-            console.log(label + '_ALAMY_LINKS=' + JSON.stringify(
-              links.filter(x => /alamy\.com/i.test(x.href) || /alamy/i.test(x.text)).slice(0, 120)
-            ));
-            console.log(label + '_INTERESTING_LINKS=' + JSON.stringify(
-              links.filter(x => /portugu|bento|train|woman|modelmayhem/i.test(x.text + ' ' + x.href)).slice(0, 120)
-            ));
-
-            const html = await page.content();
-            for (const needle of ['alamy.com', 'Portuguese woman', 'Sao Bento', 'São Bento']) {
-              const chunks = around(html, needle);
-              console.log(label + '_HTML_AROUND_' + needle.replace(/\W+/g,'_') + '=' + JSON.stringify(chunks));
-            }
-          }
-
-          (async () => {
-            const browser = await chromium.launch({ headless: true });
-            const context = await browser.newContext({
-              viewport: { width: 1440, height: 1000 },
-              userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
+          async function get(url) {
+            const r = await fetch(url, {
+              headers: {'user-agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/137 Safari/537.36'}
             });
+            const t = await r.text();
+            console.log('FETCH', url, r.status, 'LEN', t.length);
+            return t;
+          }
 
-            try {
-              {
-                const page = await context.newPage();
-                page.setDefaultTimeout(30000);
-                const net = [];
-                page.on('response', async res => {
-                  const u = res.url();
-                  if (/alamy\.com/i.test(u) && /(image|search|visual|reverse|similar)/i.test(u)) {
-                    const ct = (res.headers()['content-type'] || '');
-                    const row = {status: res.status(), url: u, ct};
-                    if (/json/i.test(ct)) {
-                      try {
-                        const t = await res.text();
-                        row.body = t.slice(0, 12000);
-                      } catch {}
-                    }
-                    net.push(row);
-                  }
-                });
+          function decode(s) {
+            return s.replace(/&amp;/g,'&').replace(/&#39;/g,"'").replace(/&quot;/g,'"')
+              .replace(/&lt;/g,'<').replace(/&gt;/g,'>');
+          }
 
-                await page.goto('https://www.alamy.com/', {waitUntil:'domcontentloaded', timeout:60000});
-                await page.waitForTimeout(2000);
-                await acceptCookies(page);
+          (async()=>{
+            const gallery = await get(urls[0]);
+            const ids = [...new Set(
+              [...gallery.matchAll(/href=["'](?:https?:\/\/pbase\.com)?\/?(?:image\/|image_expo\/image\/)(\d+)[^"']*["']/gi)]
+                .map(m=>m[1])
+            )];
+            console.log('MARGARIDA_IMAGE_IDS=' + JSON.stringify(ids));
 
-                const button = page.locator('button[data-testid="searchByImageLong"]').first();
-                await button.waitFor({state:'attached', timeout:30000});
-                await button.click({force:true});
-                const input = page.locator('input[type="file"]').first();
-                await input.waitFor({state:'attached', timeout:30000});
-                await input.setInputFiles(process.env.IMAGE_PATH);
+            const hrefs = [...new Set(
+              [...gallery.matchAll(/href=["']([^"']+)["']/gi)].map(m=>decode(m[1]))
+            )].filter(x => /image\/\d+|margarida|modelmayhem|instagram|facebook|image-expo/i.test(x));
+            console.log('MARGARIDA_INTERESTING_HREFS=' + JSON.stringify(hrefs.slice(0,300)));
 
-                await page.waitForTimeout(40000);
-                await acceptCookies(page);
-                await page.waitForTimeout(5000);
-                await dumpPage(page, 'ALAMY');
-                console.log('ALAMY_NETWORK=' + JSON.stringify(net.slice(-120)));
-                await page.close();
+            const imgs = [...new Set(
+              [...gallery.matchAll(/(?:src|href)=["']([^"']+\.(?:jpg|jpeg|png)(?:\?[^"']*)?)["']/gi)].map(m=>decode(m[1]))
+            )];
+            console.log('MARGARIDA_IMAGE_URLS=' + JSON.stringify(imgs.slice(0,300)));
+
+            for (const id of ids.slice(0,80)) {
+              const url = 'https://pbase.com/image/' + id;
+              const html = await get(url);
+              const text = html.replace(/<script[\s\S]*?<\/script>/gi,' ')
+                               .replace(/<style[\s\S]*?<\/style>/gi,' ')
+                               .replace(/<[^>]+>/g,' ')
+                               .replace(/&nbsp;/g,' ')
+                               .replace(/&amp;/g,'&')
+                               .replace(/\s+/g,' ')
+                               .trim();
+
+              const title = (html.match(/<title>([\s\S]*?)<\/title>/i)||[])[1] || '';
+              const meta = {};
+              const patterns = {
+                captured:/\b(\d{1,2}-[A-Z]{3}-\d{4}|\d{1,2}-[A-Za-z]{3}-\d{4})\b/,
+                camera:/(Canon EOS[^<\n]{0,80}|Nikon[^<\n]{0,80}|SONY[^<\n]{0,80}|FUJIFILM[^<\n]{0,80})/i,
+                exif:/((?:1\/\d+|\d+(?:\.\d+)?)s\s+f\/\d+(?:\.\d+)?[^<]{0,100}iso\d+)/i,
+                modelmayhem:/(https?:\/\/[^"'\s<]*modelmayhem[^"'\s<]*)/i,
+                instagram:/(https?:\/\/[^"'\s<]*instagram[^"'\s<]*)/i,
+                location:/(?:Location|location)[:\s<]+([^<]{1,120})/i
+              };
+              for (const [k,re] of Object.entries(patterns)) {
+                const m = html.match(re) || text.match(re);
+                if (m) meta[k] = decode(m[1] || m[0]);
               }
-
-              {
-                const page = await context.newPage();
-                page.setDefaultTimeout(30000);
-                const yurl = 'https://yandex.com/images/search?rpt=imageview&url=' + encodeURIComponent(process.env.RAW_URL);
-                await page.goto(yurl, {waitUntil:'domcontentloaded', timeout:60000}).catch(e => console.log('YANDEX_GOTO_ERROR=' + e));
-                await page.waitForTimeout(20000);
-                await dumpPage(page, 'YANDEX');
-                await page.close();
-              }
-
-              {
-                const page = await context.newPage();
-                page.setDefaultTimeout(30000);
-                const gurl = 'https://www.google.com/searchbyimage?image_url=' + encodeURIComponent(process.env.RAW_URL) + '&client=app';
-                await page.goto(gurl, {waitUntil:'domcontentloaded', timeout:60000}).catch(e => console.log('GOOGLE_GOTO_ERROR=' + e));
-                await page.waitForTimeout(15000);
-                await dumpPage(page, 'GOOGLE');
-                await page.close();
-              }
-            } catch (err) {
-              console.log('ERROR=' + (err && err.stack ? err.stack : String(err)));
-              process.exitCode = 1;
-            } finally {
-              await browser.close();
+              const links = [...new Set([...html.matchAll(/href=["']([^"']+)["']/gi)].map(m=>decode(m[1])))]
+                .filter(x => /modelmayhem|instagram|facebook|image-expo|pbase\.com\/image/i.test(x));
+              console.log('IMAGE_META=' + JSON.stringify({id,url,title:decode(title),meta,links:links.slice(0,50),text:text.slice(0,2500)}));
             }
-          })();
+
+            const porto = await get(urls[1]);
+            const portoDates = [...new Set([...porto.matchAll(/\b\d{1,2}-[A-Z]{3}-\d{4}\b/g)].map(m=>m[0]))];
+            console.log('PORTO_DATES=' + JSON.stringify(portoDates.slice(0,100)));
+
+            const root = await get(urls[2]);
+            const mpos = root.toLowerCase().indexOf('margarida');
+            if (mpos >= 0) console.log('PORTRAITS_AROUND_MARGARIDA=' + root.slice(Math.max(0,mpos-2500),mpos+3500));
+          })().catch(e => { console.error(e); process.exit(1); });
           NODE
