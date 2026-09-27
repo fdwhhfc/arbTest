@@ -1,4 +1,4 @@
-name: Inspect ModelMayhem browse filters
+name: Inspect ModelMayhem advanced browse filters
 
 on:
   push:
@@ -21,31 +21,27 @@ jobs:
         run: |
           npm install playwright@1.55.0 >/dev/null 2>&1
           npx playwright install --with-deps chromium >/dev/null 2>&1
-      - name: Inspect browse form
+      - name: Inspect advanced browse form
         run: |
           node <<'NODE'
           const {chromium}=require('playwright');
           (async()=>{
             const b=await chromium.launch({headless:true});
-            const p=await b.newPage({viewport:{width:1400,height:1200},userAgent:'Mozilla/5.0'});
-            await p.goto('https://www.modelmayhem.com/browse',{waitUntil:'domcontentloaded',timeout:60000});
-            await p.waitForTimeout(3000);
-            console.log('FINAL='+p.url());
-            console.log('TITLE='+await p.title());
-            const forms=await p.locator('form').evaluateAll(fs=>fs.map(f=>({
-              action:f.action,method:f.method,id:f.id,class:f.className,
-              html:f.outerHTML.slice(0,20000)
-            })));
-            console.log('FORMS='+JSON.stringify(forms));
+            const p=await b.newPage({viewport:{width:1400,height:1400},userAgent:'Mozilla/5.0'});
+            await p.goto('https://www.modelmayhem.com/browse/any/us/all/all?show_advanced=1',{waitUntil:'domcontentloaded',timeout:60000});
+            await p.waitForTimeout(2500);
+            let txt=await p.locator('body').innerText().catch(()=>'');
+            console.log('HAS_HAIR='+/hair color/i.test(txt));
+            console.log('TEXT='+txt.slice(0,25000).replace(/\n/g,' | '));
             const sels=await p.locator('select').evaluateAll(ss=>ss.map(s=>({
               name:s.name,id:s.id,multiple:s.multiple,
-              options:[...s.options].map(o=>({text:o.text,value:o.value,selected:o.selected})).slice(0,200)
-            })));
-            console.log('SELECTS='+JSON.stringify(sels));
+              options:[...s.options].map(o=>({text:o.text,value:o.value,selected:o.selected}))
+            })).filter(x=>/hair|eye|ethnic|skin|experience|comp|genre|age|height|weight|bust|waist|hips|cup|dress|shoe/i.test(x.name+' '+x.id+' '+JSON.stringify(x.options))));
+            console.log('ADV_SELECTS='+JSON.stringify(sels));
             const inputs=await p.locator('input').evaluateAll(ins=>ins.map(i=>({
-              type:i.type,name:i.name,id:i.id,value:i.value,checked:i.checked,placeholder:i.placeholder
-            })));
-            console.log('INPUTS='+JSON.stringify(inputs));
+              type:i.type,name:i.name,id:i.id,value:i.value,checked:i.checked
+            })).filter(x=>/hair|eye|ethnic|skin|genre|age|height|weight|bust|waist|hips|cup|dress|shoe|advanced/i.test(x.name+' '+x.id)));
+            console.log('ADV_INPUTS='+JSON.stringify(inputs));
             await b.close();
           })().catch(e=>{console.error(e);process.exit(1)});
           NODE
