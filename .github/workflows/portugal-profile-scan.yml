@@ -1,0 +1,125 @@
+name: Scan Portugal ModelMayhem portfolios
+
+on:
+  push:
+    paths:
+      - ".github/workflows/portugal-profile-scan.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -q requests beautifulsoup4 opencv-python-headless numpy
+      - name: Scan Porto and Lisbon public portfolios
+        run: |
+          python - <<'PY'
+          import cv2, numpy as np, requests, re, json, time
+          from bs4 import BeautifulSoup
+          from urllib.parse import urljoin
+
+          UA={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36'}
+          S=requests.Session(); S.headers.update(UA)
+          ref_urls={
+            'color':'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/03_modelmayhem_color.png',
+            'bw':'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/04_modelmayhem_bw.png'
+          }
+          browse=[
+            'https://www.modelmayhem.com/browse/model/portugal/norte/porto',
+            'https://www.modelmayhem.com/browse/model/portugal/lisboa-e-vale-do-tejo/lisbon'
+          ]
+
+          def get(u, timeout=25):
+            r=S.get(u,timeout=timeout)
+            r.raise_for_status()
+            return r
+
+          def dec(b):
+            return cv2.imdecode(np.frombuffer(b,np.uint8),cv2.IMREAD_COLOR)
+
+          refs={k:dec(get(u).content) for k,u in ref_urls.items()}
+          sift=cv2.SIFT_create(nfeatures=4000)
+
+          def score(a,b):
+            ga=cv2.cvtColor(a,cv2.COLOR_BGR2GRAY); gb=cv2.cvtColor(b,cv2.COLOR_BGR2GRAY)
+            ka,da=sift.detectAndCompute(ga,None); kb,db=sift.detectAndCompute(gb,None)
+            if da is None or db is None or len(ka)<4 or len(kb)<4: return {'good':0,'inliers':0,'ratio':0.0}
+            pairs=cv2.BFMatcher().knnMatch(da,db,k=2)
+            good=[m for m,n in pairs if m.distance < 0.70*n.distance]
+            inl=0
+            if len(good)>=4:
+              src=np.float32([ka[m.queryIdx].pt for m in good]).reshape(-1,1,2)
+              dst=np.float32([kb[m.trainIdx].pt for m in good]).reshape(-1,1,2)
+              _,mask=cv2.findHomography(src,dst,cv2.RANSAC,4.0)
+              if mask is not None: inl=int(mask.sum())
+            return {'good':len(good),'inliers':inl,'ratio':round(inl/max(1,len(good)),3)}
+
+          # Collect all numeric profile IDs exposed on browse pages.
+          ids=set()
+          for u in browse:
+            try:
+              html=get(u).text
+            except Exception as e:
+              print('BROWSE_ERR',u,repr(e)); continue
+            for m in re.finditer(r'href=["\'](?:https?://www\.modelmayhem\.com)?/(\d{4,10})["\']',html,re.I):
+              ids.add(int(m.group(1)))
+            # Follow numbered/next browse links on the same browse prefix, if present.
+            soup=BeautifulSoup(html,'html.parser')
+            extra=[]
+            for a in soup.find_all('a',href=True):
+              h=urljoin(u,a['href'])
+              if '/browse/model/portugal/' in h and h not in browse:
+                extra.append(h)
+            for h in list(dict.fromkeys(extra))[:20]:
+              try:
+                hh=get(h).text
+              except: continue
+              for m in re.finditer(r'href=["\'](?:https?://www\.modelmayhem\.com)?/(\d{4,10})["\']',hh,re.I):
+                ids.add(int(m.group(1)))
+          print('PROFILE_IDS='+json.dumps(sorted(ids)))
+          print('PROFILE_COUNT='+str(len(ids)))
+
+          hits=[]
+          scanned=0
+          for pid in sorted(ids):
+            purl=f'https://www.modelmayhem.com/portfolio/{pid}/viewall'
+            try:
+              html=get(purl).text
+            except Exception:
+              continue
+            urls=[]
+            for u in re.findall(r'https://photos\.modelmayhem\.com/photos/[^"\'<>\s)]+',html,re.I):
+              u=u.replace('&amp;','&')
+              if re.search(r'\.(?:jpe?g|png)(?:\?|$)',u,re.I):
+                urls.append(u)
+            urls=list(dict.fromkeys(urls))
+            if not urls:
+              continue
+            scanned += 1
+            best={'color':None,'bw':None}
+            for u in urls[:120]:
+              try:
+                img=dec(get(u,15).content)
+                if img is None: continue
+              except: continue
+              for key in ['color','bw']:
+                s=score(refs[key],img)
+                row={'pid':pid,'url':u,'w':int(img.shape[1]),'h':int(img.shape[0]),**s}
+                cur=best[key]
+                if cur is None or (s['inliers'],s['good'],s['ratio'])>(cur['inliers'],cur['good'],cur['ratio']):
+                  best[key]=row
+                if s['inliers']>=10:
+                  hits.append({'key':key,**row})
+                  print('STRONG_HIT='+json.dumps({'key':key,**row}))
+            print('PROFILE_BEST='+json.dumps({'pid':pid,'photo_count':len(urls),'color':best['color'],'bw':best['bw']}))
+          print('SCANNED_PROFILES='+str(scanned))
+          print('ALL_STRONG_HITS='+json.dumps(sorted(hits,key=lambda x:(x['inliers'],x['good']),reverse=True)[:100]))
+          PY
