@@ -1,0 +1,113 @@
+name: Reverse image research
+
+on:
+  push:
+    paths:
+      - ".github/workflows/reverse-image-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  alamy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Playwright
+        run: |
+          npm install playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Reverse search on Alamy
+        env:
+          IMAGE_PATH: 02_alamy_color_watermark.png
+        run: |
+          node <<'NODE'
+          const { chromium } = require('playwright');
+
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const context = await browser.newContext({
+              viewport: { width: 1440, height: 1000 },
+              userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
+            });
+            const page = await context.newPage();
+            page.setDefaultTimeout(30000);
+
+            try {
+              await page.goto('https://www.alamy.com/', {
+                waitUntil: 'domcontentloaded',
+                timeout: 60000
+              });
+              console.log('HOME_URL=' + page.url());
+              console.log('HOME_TITLE=' + await page.title());
+
+              for (const sel of [
+                '#onetrust-accept-btn-handler',
+                'button:has-text("Accept all")',
+                'button:has-text("Accept All")'
+              ]) {
+                const el = page.locator(sel).first();
+                if (await el.isVisible().catch(() => false)) {
+                  await el.click({ force: true }).catch(() => {});
+                  break;
+                }
+              }
+
+              const homeText = await page.locator('body').innerText().catch(() => '');
+              console.log('HOME_TEXT_BEGIN');
+              console.log(homeText.slice(0, 3000));
+              console.log('HOME_TEXT_END');
+
+              const button = page.locator('button[data-testid="searchByImageLong"]').first();
+              await button.waitFor({ state: 'attached', timeout: 30000 });
+              await button.click({ force: true });
+
+              const fileInput = page.locator('input[type="file"]').first();
+              await fileInput.waitFor({ state: 'attached', timeout: 30000 });
+              await fileInput.setInputFiles(process.env.IMAGE_PATH);
+
+              await page.waitForTimeout(15000);
+              await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+              await page.waitForTimeout(5000);
+
+              console.log('RESULT_URL=' + page.url());
+              console.log('RESULT_TITLE=' + await page.title());
+
+              const resultText = await page.locator('body').innerText().catch(() => '');
+              console.log('RESULT_TEXT_BEGIN');
+              console.log(resultText.slice(0, 20000));
+              console.log('RESULT_TEXT_END');
+
+              const links = await page.locator('a').evaluateAll(nodes =>
+                nodes.map(a => ({
+                  text: (a.innerText || a.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 500),
+                  href: a.href || ''
+                }))
+                .filter(x => x.href && (x.href.includes('alamy.com') || x.text))
+                .slice(0, 300)
+              );
+              console.log('RESULT_LINKS_JSON=' + JSON.stringify(links));
+
+              const html = await page.content();
+              const ids = [...new Set(
+                (html.match(/\b(?:[A-Z0-9]{6,7}|\d{8,12})\b/g) || [])
+              )].slice(0, 300);
+              console.log('CANDIDATE_IDS=' + JSON.stringify(ids));
+            } catch (err) {
+              console.log('ERROR=' + (err && err.stack ? err.stack : String(err)));
+              const body = await page.locator('body').innerText().catch(() => '');
+              console.log('ERROR_PAGE_TEXT=' + body.slice(0, 10000));
+              process.exitCode = 1;
+            } finally {
+              await browser.close();
+            }
+          })();
+          NODE
