@@ -18,12 +18,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libimage-exiftool-perl >/dev/null
-      - name: Inspect original PBase files
+      - name: Inspect public PBase original file
         run: |
           set -e
-          for id in 167184989 167246937 169122059; do
-            echo "===== $id ====="
-            curl -L --fail --silent --show-error -A "Mozilla/5.0" "https://pbase.com/image_expo/image/$id/original" -o "/tmp/$id.jpg"
-            file "/tmp/$id.jpg"
-            exiftool -G1 -a -s "/tmp/$id.jpg" | grep -Ei "FileName|FileSize|ImageWidth|ImageHeight|Date|Time|GPS|Location|City|Country|Artist|Author|Creator|Copyright|Credit|Source|Title|Description|Caption|Comment|Subject|Keyword|XP|Software|DocumentName|UserComment" || true
-          done
+          url="https://a4.pbase.com/o10/02/1001402/1/167184989.E46rLDMm.Margarida003s.jpg"
+          curl -L --fail --silent --show-error -A "Mozilla/5.0" -e "https://pbase.com/image_expo/image/167184989" "$url" -o /tmp/pbase.jpg
+          file /tmp/pbase.jpg
+          exiftool -G1 -a -s /tmp/pbase.jpg
