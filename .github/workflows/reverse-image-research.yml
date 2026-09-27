@@ -1,4 +1,4 @@
-name: Yandex related-image research
+name: Search ModelMayhem crop sources
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
 jobs:
   research:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -21,83 +21,76 @@ jobs:
         run: |
           npm install playwright@1.55.0
           npx playwright install --with-deps chromium
-      - name: Inspect Yandex related results
-        env:
-          RAW_URL: https://raw.githubusercontent.com/fdwhhfc/arbTest/master/02_alamy_color_watermark.png
+      - name: Query Yandex metadata for both crops
         run: |
           node <<'NODE'
           const { chromium } = require('playwright');
 
-          function collectStrings(obj, out, path='') {
-            if (obj == null) return;
-            if (typeof obj === 'string') {
-              if (/modelmayhem|photos\.modelmayhem|alamy|instagram|facebook/i.test(obj)) {
-                out.push({path, value: obj.slice(0,1200)});
-              }
-              return;
+          const images = {
+            color: 'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/03_modelmayhem_color.png',
+            bw: 'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/04_modelmayhem_bw.png'
+          };
+
+          function findInitialState(pageStates) {
+            for (const s of pageStates) {
+              try {
+                const j = JSON.parse(s);
+                if (j && j.initialState) return j.initialState;
+              } catch {}
             }
-            if (Array.isArray(obj)) {
-              obj.forEach((v,i)=>collectStrings(v,out,path+'['+i+']'));
-              return;
-            }
-            if (typeof obj === 'object') {
-              for (const [k,v] of Object.entries(obj)) collectStrings(v,out,path+'.'+k);
-            }
+            return null;
           }
 
-          async function runPage(browser, cbirPage) {
+          async function query(browser, label, imageUrl, cbirPage, extra='') {
             const page = await browser.newPage({
-              viewport:{width:1440,height:1100},
+              viewport:{width:1440,height:1000},
               userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
             });
-            const url = 'https://yandex.com/images/search?rpt=imageview&cbir_page=' + cbirPage + '&url=' + encodeURIComponent(process.env.RAW_URL);
-            console.log('OPEN='+url);
-            await page.goto(url,{waitUntil:'domcontentloaded',timeout:60000}).catch(e=>console.log('GOTO_ERR='+e));
-            await page.waitForTimeout(25000);
-            console.log('FINAL_URL='+page.url());
-            console.log('TITLE='+await page.title().catch(()=>'')); 
-
-            const body = await page.locator('body').innerText().catch(()=>'');
-            console.log('BODY_BEGIN');
-            console.log(body.slice(0,30000));
-            console.log('BODY_END');
-
-            const states = await page.locator('[data-state]').evaluateAll(nodes => nodes.map(n=>n.getAttribute('data-state')).filter(Boolean));
-            console.log('DATA_STATE_COUNT='+states.length);
-            let hitCount=0;
-            for (let i=0;i<states.length;i++) {
-              const s=states[i];
-              if (/modelmayhem|photos\.modelmayhem|alamy/i.test(s)) {
-                hitCount++;
-                console.log('RAW_STATE_HIT_'+i+'='+s.slice(0,50000));
-                try {
-                  const j=JSON.parse(s);
-                  const out=[];
-                  collectStrings(j,out,'root');
-                  console.log('PARSED_HITS_'+i+'='+JSON.stringify(out.slice(0,300)));
-                } catch {}
+            const url='https://yandex.com/images/search?rpt=imageview&cbir_page='+cbirPage+'&url='+encodeURIComponent(imageUrl)+extra;
+            await page.goto(url,{waitUntil:'domcontentloaded',timeout:60000}).catch(e=>console.log('GOTO_ERR',label,cbirPage,String(e)));
+            await page.waitForTimeout(12000);
+            const states=await page.locator('[data-state]').evaluateAll(ns=>ns.map(n=>n.getAttribute('data-state')).filter(Boolean));
+            const init=findInitialState(states);
+            const out=[];
+            if (init?.serpList?.items?.entities) {
+              for (const e of Object.values(init.serpList.items.entities)) {
+                out.push({
+                  pos:e.pos,
+                  title:e.snippet?.title || e.alt || '',
+                  domain:e.snippet?.domain || '',
+                  pageUrl:e.snippet?.url || '',
+                  origUrl:e.origUrl || e.viewerData?.preview?.[0]?.url || '',
+                  width:e.origWidth || e.width || null,
+                  height:e.origHeight || e.height || null
+                });
               }
             }
-            console.log('STATE_HIT_COUNT='+hitCount);
-
-            const links = await page.locator('a').evaluateAll(nodes => nodes.map(a=>({
-              text:(a.innerText||a.textContent||'').trim().replace(/\s+/g,' ').slice(0,500),
-              href:a.href||''
-            })).filter(x=>/modelmayhem|photos\.modelmayhem|alamy/i.test(x.href+' '+x.text)));
-            console.log('LINK_HITS='+JSON.stringify(links.slice(0,300)));
-
-            const html = await page.content();
-            const re = /https?:\\?\/\\?\/[^\"'<>\s]{0,1000}(?:modelmayhem|alamy)[^\"'<>\s]{0,1000}/ig;
-            const urls=[...new Set((html.match(re)||[]).map(x=>x.replace(/\\u002F/g,'/').replace(/\\\//g,'/')))];
-            console.log('HTML_URL_HITS='+JSON.stringify(urls.slice(0,300)));
+            if (init?.cbirSimilar?.thumbs) {
+              for (const [i,e] of init.cbirSimilar.thumbs.entries()) {
+                out.push({
+                  pos:'thumb-'+i,
+                  title:e.title||'',
+                  domain:'',
+                  pageUrl:e.linkUrl||'',
+                  origUrl:e.imageUrl||'',
+                  width:e.width||null,
+                  height:e.height||null
+                });
+              }
+            }
+            console.log('RESULT='+JSON.stringify({label,cbirPage,finalUrl:page.url(),count:out.length,items:out.slice(0,150)}));
             await page.close();
           }
 
           (async()=>{
             const browser=await chromium.launch({headless:true});
             try {
-              await runPage(browser,'sites');
-              await runPage(browser,'similar');
+              for (const [label,url] of Object.entries(images)) {
+                await query(browser,label,url,'sites');
+                await query(browser,label,url,'similar');
+                await query(browser,label,url,'similar','&p=1');
+                await query(browser,label,url,'similar','&p=2');
+              }
             } finally {
               await browser.close();
             }
