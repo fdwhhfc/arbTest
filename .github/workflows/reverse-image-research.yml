@@ -1,4 +1,4 @@
-name: PBase Porto metadata research
+name: Public portfolio metadata research
 
 on:
   push:
@@ -12,30 +12,82 @@ permissions:
 jobs:
   research:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Fetch Porto image IDs and EXIF
+      - name: Inspect public PBase and ModelMayhem metadata
+        shell: bash
         run: |
-          node <<'NODE'
-          async function get(url) {
-            const r = await fetch(url,{headers:{'user-agent':'Mozilla/5.0'}});
-            const t = await r.text();
-            console.log('FETCH',url,r.status,'LEN',t.length);
-            return t;
-          }
-          function decode(s){return s.replace(/&amp;/g,'&').replace(/&#39;/g,"'").replace(/&quot;/g,'"');}
-          (async()=>{
-            const html=await get('https://pbase.com/image_expo/porto');
-            const ids=[...new Set([...html.matchAll(/href=["'](?:https?:\/\/pbase\.com)?\/?(?:image\/|image_expo\/image\/)(\d+)[^"']*["']/gi)].map(m=>m[1]))];
-            console.log('PORTO_IMAGE_IDS='+JSON.stringify(ids));
-            for(const id of ids.slice(0,50)){
-              const page=await get('https://pbase.com/image/'+id+'&exif=Y');
-              const text=page.replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ')
-                .replace(/<[^>]+>/g,' ').replace(/&nbsp;/g,' ').replace(/&amp;/g,'&').replace(/\s+/g,' ').trim();
-              const dt=(text.match(/Date\/Time\s+(\d{1,2}-[A-Za-z]{3}-\d{4}\s+\d{2}:\d{2}:\d{2})/i)||[])[1]||'';
-              const title=(page.match(/<title>([\s\S]*?)<\/title>/i)||[])[1]||'';
-              const cam=(text.match(/Make\s+([^ ]+)\s+Model\s+([^ ]+(?:\s+[^ ]+){0,3})\s+Flash Used/i)||[]);
-              console.log('PORTO_META='+JSON.stringify({id,title:decode(title),dateTime:dt,text:text.slice(0,900)}));
-            }
-          })().catch(e=>{console.error(e);process.exit(1)});
-          NODE
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libimage-exiftool-perl >/dev/null
+
+          UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
+
+          for ID in 167184989 167246937 169122059; do
+            curl -L --fail --silent --show-error -A "$UA" "https://pbase.com/image_expo/image/$ID" -o "/tmp/$ID.html"
+            echo "===== PBASE_HTML_LINKS_$ID ====="
+            grep -Eo 'https?://[^"'\'' <>]+' "/tmp/$ID.html" | grep -Ei 'pbase|jpg|jpeg|original|image' | head -200 || true
+            echo "===== PBASE_HTML_AROUND_ORIGINAL_$ID ====="
+            grep -in -C 4 'original' "/tmp/$ID.html" | head -120 || true
+            echo "===== PBASE_HTML_AROUND_MARGARIDA_$ID ====="
+            grep -in -C 4 'Margarida' "/tmp/$ID.html" | head -120 || true
+
+            python3 - "$ID" <<'PY'
+import re, sys, html
+id=sys.argv[1]
+s=open(f"/tmp/{id}.html",encoding="utf-8",errors="ignore").read()
+urls=[]
+for m in re.finditer(r'''(?:src|href)\s*=\s*["']([^"']+)["']''', s, re.I):
+    u=html.unescape(m.group(1))
+    if 'pbase' in u.lower() or any(x in u.lower() for x in ['.jpg','.jpeg','original']):
+        urls.append(u)
+print("PBASE_URLS_JSON="+repr(list(dict.fromkeys(urls))[:300]))
+PY
+          done
+
+          echo "===== TRY_ORIGINAL_IMAGE_METADATA ====="
+          python3 <<'PY' > /tmp/candidates.txt
+import re, html
+s=open('/tmp/167184989.html',encoding='utf-8',errors='ignore').read()
+urls=[]
+for m in re.finditer(r'''(?:src|href)\s*=\s*["']([^"']+)["']''',s,re.I):
+    u=html.unescape(m.group(1))
+    if u.startswith('//'): u='https:'+u
+    elif u.startswith('/'): u='https://pbase.com'+u
+    if u.startswith('http') and ('.jpg' in u.lower() or '.jpeg' in u.lower()):
+        urls.append(u)
+for u in dict.fromkeys(urls):
+    print(u)
+PY
+          cat /tmp/candidates.txt
+          n=0
+          while IFS= read -r u; do
+            n=$((n+1))
+            out="/tmp/img$n"
+            if curl -L --fail --silent --show-error -A "$UA" "$u" -o "$out"; then
+              echo "IMAGE_URL=$u"
+              file "$out" || true
+              exiftool -G1 -a -s "$out" | head -250 || true
+            fi
+          done < /tmp/candidates.txt
+
+          echo "===== MODELMAYHEM_SOURCE ====="
+          curl -L --fail --silent --show-error -A "$UA" "https://www.modelmayhem.com/pussinbootz" -o /tmp/mm.html || true
+          echo "MM_LEN=$(wc -c </tmp/mm.html 2>/dev/null || echo 0)"
+          grep -in -C 8 -E 'Picture by Victor|Verified Credits|See 5 More|Margarida|Demonia SG|March 2018|April 2018|May 2018|June 2018' /tmp/mm.html | head -600 || true
+          echo "===== MM_PROFILE_LINKS_AROUND_CREDITS ====="
+          python3 <<'PY'
+import re, html
+s=open('/tmp/mm.html',encoding='utf-8',errors='ignore').read()
+for needle in ['Picture by Victor','See 5 More','Verified Credits']:
+    i=s.find(needle)
+    if i>=0:
+        chunk=s[max(0,i-30000):i+50000]
+        print('NEEDLE',needle)
+        for m in re.finditer(r'href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',chunk,re.I|re.S):
+            href=html.unescape(m.group(1))
+            text=re.sub(r'<[^>]+>',' ',m.group(2))
+            text=html.unescape(re.sub(r'\s+',' ',text)).strip()
+            if text or 'modelmayhem' in href:
+                print(text[:180], '=>', href[:300])
+PY
