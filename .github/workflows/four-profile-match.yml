@@ -39,7 +39,11 @@ jobs:
             ga=cv2.cvtColor(a,cv2.COLOR_BGR2GRAY);gb=cv2.cvtColor(b,cv2.COLOR_BGR2GRAY)
             ka,da=sift.detectAndCompute(ga,None);kb,db=sift.detectAndCompute(gb,None)
             if da is None or db is None:return (0,0,0.0,None)
-            good=[m for m,n in cv2.BFMatcher().knnMatch(da,db,k=2) if m.distance<.68*n.distance]
+            good=[]
+            for pair in cv2.BFMatcher().knnMatch(da,db,k=2):
+              if len(pair)<2: continue
+              m,n=pair
+              if m.distance<.68*n.distance: good.append(m)
             if len(good)<4:return (len(good),0,0.0,None)
             src=np.float32([ka[m.queryIdx].pt for m in good]).reshape(-1,1,2)
             dst=np.float32([kb[m.trainIdx].pt for m in good]).reshape(-1,1,2)
