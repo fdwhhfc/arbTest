@@ -62,8 +62,11 @@ jobs:
               print('UPLOAD',name,r.status_code,r.url,'LEN',len(r.content))
               print('UPLOAD_BODY',name,r.text[:1200].replace('\n',' '))
               j=r.json()
-              q=j['blocks'][0]['params']['url']
-              base='https://yandex.com/images/search?'+q.lstrip('?')
+              p=j['blocks'][0]['params']
+              orig=p['originalImageUrl']
+              cbir=p['cbirId']
+              from urllib.parse import urlencode
+              base='https://yandex.com/images/search?'+urlencode({'rpt':'imageview','url':orig,'cbir_id':cbir})
               urls.append({'name':name,'url':base})
               print('SEARCH_URL',name,base)
             except Exception as e:
