@@ -1,0 +1,117 @@
+name: ModelMayhem profile image matching
+
+on:
+  push:
+    paths:
+      - ".github/workflows/profile-match.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  match:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -q requests beautifulsoup4 opencv-python-headless numpy
+      - name: Compare public portfolio images to the two crops
+        run: |
+          python - <<'PY'
+          import cv2, numpy as np, requests, re, json
+          from urllib.parse import urljoin
+
+          UA={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36'}
+          crops={
+            'color':'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/03_modelmayhem_color.png',
+            'bw':'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/04_modelmayhem_bw.png'
+          }
+          profile_ids=[
+            3696732,3388723,684788,3381519,1172618,
+            3074573,1216624,2948719,1066574,1029311,
+            3791301,634960,1642874,1278984,1249123,
+            1143987,2325162,4328789
+          ]
+
+          def get(url):
+            r=requests.get(url,headers=UA,timeout=25)
+            r.raise_for_status()
+            return r
+
+          def decode_img(data):
+            arr=np.frombuffer(data,np.uint8)
+            return cv2.imdecode(arr,cv2.IMREAD_COLOR)
+
+          crop_imgs={k:decode_img(get(u).content) for k,u in crops.items()}
+
+          sift=cv2.SIFT_create(nfeatures=2500)
+          def score(a,b):
+            # Whole-image duplicate/crop matching, not face recognition.
+            ga=cv2.cvtColor(a,cv2.COLOR_BGR2GRAY)
+            gb=cv2.cvtColor(b,cv2.COLOR_BGR2GRAY)
+            ka,da=sift.detectAndCompute(ga,None)
+            kb,db=sift.detectAndCompute(gb,None)
+            if da is None or db is None or len(ka)<4 or len(kb)<4:
+              return {'good':0,'inliers':0,'ratio':0.0}
+            bf=cv2.BFMatcher()
+            pairs=bf.knnMatch(da,db,k=2)
+            good=[m for m,n in pairs if m.distance < 0.72*n.distance]
+            inliers=0
+            if len(good)>=4:
+              src=np.float32([ka[m.queryIdx].pt for m in good]).reshape(-1,1,2)
+              dst=np.float32([kb[m.trainIdx].pt for m in good]).reshape(-1,1,2)
+              H,mask=cv2.findHomography(src,dst,cv2.RANSAC,5.0)
+              if mask is not None: inliers=int(mask.sum())
+            return {'good':len(good),'inliers':inliers,'ratio':round(inliers/max(1,len(good)),3)}
+
+          allres=[]
+          for pid in profile_ids:
+            urls=set()
+            for page in [f'https://www.modelmayhem.com/portfolio/{pid}/viewall',f'https://www.modelmayhem.com/{pid}']:
+              try:
+                html=get(page).text
+              except Exception as e:
+                continue
+              for u in re.findall(r'https://photos\.modelmayhem\.com/(?:photos|avatars)/[^"\'<>\s)]+',html,re.I):
+                u=u.replace('&amp;','&')
+                # normalize common escaped tail
+                urls.add(u)
+            print('PROFILE',pid,'URLCOUNT',len(urls))
+            for u in sorted(urls):
+              # only actual jpg/jpeg/png resources
+              if not re.search(r'\.(?:jpe?g|png)(?:\?|$)',u,re.I): continue
+              try:
+                data=get(u).content
+                img=decode_img(data)
+                if img is None: continue
+                row={'profile_id':pid,'url':u,'w':int(img.shape[1]),'h':int(img.shape[0])}
+                for k,c in crop_imgs.items():
+                  row[k]=score(c,img)
+                allres.append(row)
+              except Exception:
+                pass
+
+          def rank(key):
+            return sorted(allres,key=lambda r:(r[key]['inliers'],r[key]['good'],r[key]['ratio']),reverse=True)[:30]
+
+          print('TOP_COLOR='+json.dumps(rank('color'),ensure_ascii=False))
+          print('TOP_BW='+json.dumps(rank('bw'),ensure_ascii=False))
+
+          # Profiles that have at least one reasonably strong candidate for BOTH crops.
+          by={}
+          for r in allres:
+            p=by.setdefault(r['profile_id'],{'color':[],'bw':[]})
+            p['color'].append((r['color']['inliers'],r['color']['good'],r['url']))
+            p['bw'].append((r['bw']['inliers'],r['bw']['good'],r['url']))
+          both=[]
+          for pid,d in by.items():
+            mc=max(d['color'],default=(0,0,''))
+            mb=max(d['bw'],default=(0,0,''))
+            both.append({'profile_id':pid,'best_color':mc,'best_bw':mb})
+          both.sort(key=lambda x:(min(x['best_color'][0],x['best_bw'][0]),x['best_color'][0]+x['best_bw'][0]),reverse=True)
+          print('PROFILE_BOTH='+json.dumps(both,ensure_ascii=False))
+          PY
