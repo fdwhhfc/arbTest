@@ -1,0 +1,74 @@
+name: Focused four-photo portfolio duplicate scan
+
+on:
+  push:
+    paths:
+      - ".github/workflows/four-profile-match.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  match:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -q requests opencv-python-headless numpy
+      - name: Scan candidate portfolios for exact crop copies
+        run: |
+          python - <<'PY'
+          import cv2,numpy as np,requests,re,json
+          UA={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36'}
+          S=requests.Session(); S.headers.update(UA)
+          pids=[3074573,2325162,1143987,903996,2400338,4066358,4257875,4127336,3447085,3483157,2394396,4074490,4050235,2274243,2887156,1129054,1645415,3285850,3396897]
+          refs={
+            'color':'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/03_modelmayhem_color.png',
+            'bw':'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/04_modelmayhem_bw.png'
+          }
+          def get(u,t=20):
+            r=S.get(u,timeout=t);r.raise_for_status();return r
+          def dec(b):return cv2.imdecode(np.frombuffer(b,np.uint8),cv2.IMREAD_COLOR)
+          ref={k:dec(get(u).content) for k,u in refs.items()}
+          sift=cv2.SIFT_create(nfeatures=6000)
+          def match(a,b):
+            ga=cv2.cvtColor(a,cv2.COLOR_BGR2GRAY);gb=cv2.cvtColor(b,cv2.COLOR_BGR2GRAY)
+            ka,da=sift.detectAndCompute(ga,None);kb,db=sift.detectAndCompute(gb,None)
+            if da is None or db is None:return (0,0,0.0,None)
+            good=[m for m,n in cv2.BFMatcher().knnMatch(da,db,k=2) if m.distance<.68*n.distance]
+            if len(good)<4:return (len(good),0,0.0,None)
+            src=np.float32([ka[m.queryIdx].pt for m in good]).reshape(-1,1,2)
+            dst=np.float32([kb[m.trainIdx].pt for m in good]).reshape(-1,1,2)
+            H,mask=cv2.findHomography(src,dst,cv2.RANSAC,3.0)
+            inl=int(mask.sum()) if mask is not None else 0
+            corr=None
+            if H is not None and inl>=4:
+              h,w=gb.shape
+              warp=cv2.warpPerspective(ga,H,(w,h))
+              msk=cv2.warpPerspective(np.ones_like(ga,np.uint8)*255,H,(w,h))>0
+              if msk.sum()>1000:
+                x=warp[msk].astype(np.float32);y=gb[msk].astype(np.float32)
+                x=(x-x.mean())/(x.std()+1e-6);y=(y-y.mean())/(y.std()+1e-6)
+                corr=float(np.mean(x*y))
+            return (len(good),inl,round(inl/max(1,len(good)),3),None if corr is None else round(corr,3))
+          for pid in pids:
+            urls=set()
+            for page in [f'https://www.modelmayhem.com/{pid}',f'https://www.modelmayhem.com/portfolio/{pid}/viewall']:
+              try: html=get(page).text
+              except: continue
+              urls.update(u.replace('&amp;','&') for u in re.findall(r'https://photos\.modelmayhem\.com/(?:photos|avatars)/[^"\'<>\s)]+',html,re.I))
+            rows=[]
+            for u in urls:
+              if not re.search(r'\.(?:jpe?g|png)(?:\?|$)',u,re.I):continue
+              try: im=dec(get(u,12).content)
+              except:continue
+              if im is None:continue
+              c=match(ref['color'],im);b=match(ref['bw'],im)
+              if c[1]>=8 or b[1]>=8 or (c[1]>=4 and c[3] and c[3]>.5) or (b[1]>=4 and b[3] and b[3]>.5):
+                rows.append({'url':u,'color':c,'bw':b})
+            print('PROFILE='+json.dumps({'pid':pid,'images':len(urls),'hits':rows}))
+          PY
