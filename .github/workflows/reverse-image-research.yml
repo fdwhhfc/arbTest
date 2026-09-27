@@ -1,8 +1,9 @@
-name: Public portfolio metadata research
+name: Public metadata research
 
 on:
   push:
     paths:
+      - "research_public.py"
       - ".github/workflows/reverse-image-research.yml"
   workflow_dispatch:
 
@@ -12,82 +13,8 @@ permissions:
 jobs:
   research:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
-      - name: Inspect public PBase and ModelMayhem metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libimage-exiftool-perl >/dev/null
-
-          UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
-
-          for ID in 167184989 167246937 169122059; do
-            curl -L --fail --silent --show-error -A "$UA" "https://pbase.com/image_expo/image/$ID" -o "/tmp/$ID.html"
-            echo "===== PBASE_HTML_LINKS_$ID ====="
-            grep -Eo 'https?://[^"'\'' <>]+' "/tmp/$ID.html" | grep -Ei 'pbase|jpg|jpeg|original|image' | head -200 || true
-            echo "===== PBASE_HTML_AROUND_ORIGINAL_$ID ====="
-            grep -in -C 4 'original' "/tmp/$ID.html" | head -120 || true
-            echo "===== PBASE_HTML_AROUND_MARGARIDA_$ID ====="
-            grep -in -C 4 'Margarida' "/tmp/$ID.html" | head -120 || true
-
-            python3 - "$ID" <<'PY'
-import re, sys, html
-id=sys.argv[1]
-s=open(f"/tmp/{id}.html",encoding="utf-8",errors="ignore").read()
-urls=[]
-for m in re.finditer(r'''(?:src|href)\s*=\s*["']([^"']+)["']''', s, re.I):
-    u=html.unescape(m.group(1))
-    if 'pbase' in u.lower() or any(x in u.lower() for x in ['.jpg','.jpeg','original']):
-        urls.append(u)
-print("PBASE_URLS_JSON="+repr(list(dict.fromkeys(urls))[:300]))
-PY
-          done
-
-          echo "===== TRY_ORIGINAL_IMAGE_METADATA ====="
-          python3 <<'PY' > /tmp/candidates.txt
-import re, html
-s=open('/tmp/167184989.html',encoding='utf-8',errors='ignore').read()
-urls=[]
-for m in re.finditer(r'''(?:src|href)\s*=\s*["']([^"']+)["']''',s,re.I):
-    u=html.unescape(m.group(1))
-    if u.startswith('//'): u='https:'+u
-    elif u.startswith('/'): u='https://pbase.com'+u
-    if u.startswith('http') and ('.jpg' in u.lower() or '.jpeg' in u.lower()):
-        urls.append(u)
-for u in dict.fromkeys(urls):
-    print(u)
-PY
-          cat /tmp/candidates.txt
-          n=0
-          while IFS= read -r u; do
-            n=$((n+1))
-            out="/tmp/img$n"
-            if curl -L --fail --silent --show-error -A "$UA" "$u" -o "$out"; then
-              echo "IMAGE_URL=$u"
-              file "$out" || true
-              exiftool -G1 -a -s "$out" | head -250 || true
-            fi
-          done < /tmp/candidates.txt
-
-          echo "===== MODELMAYHEM_SOURCE ====="
-          curl -L --fail --silent --show-error -A "$UA" "https://www.modelmayhem.com/pussinbootz" -o /tmp/mm.html || true
-          echo "MM_LEN=$(wc -c </tmp/mm.html 2>/dev/null || echo 0)"
-          grep -in -C 8 -E 'Picture by Victor|Verified Credits|See 5 More|Margarida|Demonia SG|March 2018|April 2018|May 2018|June 2018' /tmp/mm.html | head -600 || true
-          echo "===== MM_PROFILE_LINKS_AROUND_CREDITS ====="
-          python3 <<'PY'
-import re, html
-s=open('/tmp/mm.html',encoding='utf-8',errors='ignore').read()
-for needle in ['Picture by Victor','See 5 More','Verified Credits']:
-    i=s.find(needle)
-    if i>=0:
-        chunk=s[max(0,i-30000):i+50000]
-        print('NEEDLE',needle)
-        for m in re.finditer(r'href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',chunk,re.I|re.S):
-            href=html.unescape(m.group(1))
-            text=re.sub(r'<[^>]+>',' ',m.group(2))
-            text=html.unescape(re.sub(r'\s+',' ',text)).strip()
-            if text or 'modelmayhem' in href:
-                print(text[:180], '=>', href[:300])
-PY
+      - uses: actions/checkout@v4
+      - name: Run research script
+        run: python3 research_public.py
