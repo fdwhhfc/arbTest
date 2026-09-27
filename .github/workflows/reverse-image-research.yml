@@ -1,4 +1,4 @@
-name: TinEye crop research
+name: Deep ModelMayhem source search
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
 jobs:
   research:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 15
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -21,7 +21,7 @@ jobs:
         run: |
           npm install playwright@1.55.0
           npx playwright install --with-deps chromium
-      - name: Query TinEye for both crops
+      - name: Search Yandex deeply for ModelMayhem hits
         run: |
           node <<'NODE'
           const { chromium } = require('playwright');
@@ -29,27 +29,81 @@ jobs:
             color:'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/03_modelmayhem_color.png',
             bw:'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/04_modelmayhem_bw.png'
           };
+
+          function extractState(states) {
+            for (const s of states) {
+              try {
+                const j=JSON.parse(s);
+                if(j?.initialState) return j.initialState;
+              } catch {}
+            }
+            return null;
+          }
+
+          function collectItems(init) {
+            const out=[];
+            const ents=init?.serpList?.items?.entities || {};
+            for (const e of Object.values(ents)) {
+              out.push({
+                pos:e.pos ?? null,
+                title:e.snippet?.title || e.alt || '',
+                domain:e.snippet?.domain || '',
+                pageUrl:e.snippet?.url || '',
+                origUrl:e.origUrl || e.viewerData?.preview?.[0]?.url || '',
+                thumb:e.viewerData?.preview?.[0]?.url || '',
+                width:e.origWidth || e.width || null,
+                height:e.origHeight || e.height || null
+              });
+            }
+            const thumbs=init?.cbirSimilar?.thumbs || [];
+            for(let i=0;i<thumbs.length;i++){
+              const e=thumbs[i];
+              out.push({
+                pos:'thumb-'+i,
+                title:e.title || '',
+                domain:e.domain || '',
+                pageUrl:e.linkUrl || e.url || '',
+                origUrl:e.imageUrl || '',
+                thumb:e.thumb?.url || '',
+                width:e.width || null,
+                height:e.height || null
+              });
+            }
+            return out;
+          }
+
+          async function getPage(context, label, imageUrl, p, mode, withText) {
+            const page=await context.newPage();
+            const params=new URLSearchParams({
+              rpt:'imageview',
+              cbir_page:mode,
+              url:imageUrl,
+              p:String(p)
+            });
+            if(withText) params.set('text','site:modelmayhem.com');
+            const url='https://yandex.com/images/search?'+params.toString();
+            await page.goto(url,{waitUntil:'domcontentloaded',timeout:60000}).catch(()=>{});
+            await page.waitForTimeout(7000);
+            const states=await page.locator('[data-state]').evaluateAll(ns=>ns.map(n=>n.getAttribute('data-state')).filter(Boolean));
+            const init=extractState(states);
+            const items=collectItems(init);
+            const mm=items.filter(it=>/modelmayhem|photos\.modelmayhem/i.test(JSON.stringify(it)));
+            if(mm.length) console.log('MM='+JSON.stringify({label,p,mode,withText,finalUrl:page.url(),mm}));
+            await page.close();
+          }
+
           (async()=>{
             const browser=await chromium.launch({headless:true});
-            for(const [label,img] of Object.entries(images)){
-              const page=await browser.newPage({
-                viewport:{width:1440,height:1000},
-                userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
-              });
-              const url='https://tineye.com/search?url='+encodeURIComponent(img)+'&sort=score&order=desc';
-              await page.goto(url,{waitUntil:'domcontentloaded',timeout:60000}).catch(e=>console.log('GOTO_ERR='+label+' '+e));
-              await page.waitForTimeout(15000);
-              console.log('FINAL='+label+' '+page.url());
-              console.log('TITLE='+label+' '+await page.title().catch(()=>''));
-              const body=await page.locator('body').innerText().catch(()=>'');
-              console.log('BODY='+label+' '+body.slice(0,30000).replace(/\n/g,' | '));
-              const links=await page.locator('a').evaluateAll(ns=>ns.map(a=>({
-                text:(a.innerText||a.textContent||'').trim().replace(/\s+/g,' ').slice(0,300),
-                href:a.href||''
-              })).filter(x=>x.href));
-              console.log('LINKS='+label+' '+JSON.stringify(links.slice(0,500)));
-              await page.close();
-            }
-            await browser.close();
+            const context=await browser.newContext({
+              viewport:{width:1365,height:900},
+              userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
+            });
+            try {
+              for (const [label,img] of Object.entries(images)) {
+                for (let p=0;p<15;p++) await getPage(context,label,img,p,'similar',false);
+                for (let p=0;p<8;p++) await getPage(context,label,img,p,'similar',true);
+                for (let p=0;p<4;p++) await getPage(context,label,img,p,'sites',false);
+              }
+            } finally { await browser.close(); }
           })().catch(e=>{console.error(e);process.exit(1)});
           NODE
