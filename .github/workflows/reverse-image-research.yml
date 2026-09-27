@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  alamy:
+  research:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
@@ -25,12 +25,71 @@ jobs:
           npm install playwright@1.55.0
           npx playwright install --with-deps chromium
 
-      - name: Reverse search on Alamy
+      - name: Reverse image research
         env:
           IMAGE_PATH: 02_alamy_color_watermark.png
+          RAW_URL: https://raw.githubusercontent.com/fdwhhfc/arbTest/master/02_alamy_color_watermark.png
         run: |
           node <<'NODE'
           const { chromium } = require('playwright');
+
+          function around(text, needle, radius = 900) {
+            const out = [];
+            const lower = text.toLowerCase();
+            const target = needle.toLowerCase();
+            let i = 0;
+            while ((i = lower.indexOf(target, i)) !== -1 && out.length < 20) {
+              out.push(text.slice(Math.max(0, i-radius), Math.min(text.length, i+target.length+radius)));
+              i += target.length;
+            }
+            return out;
+          }
+
+          async function acceptCookies(page) {
+            for (const sel of [
+              '#onetrust-accept-btn-handler',
+              'button:has-text("Accept all")',
+              'button:has-text("Accept All")',
+              'button:has-text("Accept")'
+            ]) {
+              const el = page.locator(sel).first();
+              if (await el.isVisible().catch(() => false)) {
+                await el.click({ force: true }).catch(() => {});
+                await page.waitForTimeout(1000);
+                return;
+              }
+            }
+          }
+
+          async function dumpPage(page, label) {
+            console.log(label + '_URL=' + page.url());
+            console.log(label + '_TITLE=' + await page.title().catch(() => ''));
+            const body = await page.locator('body').innerText().catch(() => '');
+            console.log(label + '_TEXT_BEGIN');
+            console.log(body.slice(0, 25000));
+            console.log(label + '_TEXT_END');
+
+            const links = await page.locator('a').evaluateAll(nodes =>
+              nodes.map(a => ({
+                text: (a.innerText || a.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 600),
+                href: a.href || ''
+              }))
+              .filter(x => x.href)
+              .slice(0, 800)
+            );
+            console.log(label + '_ALAMY_LINKS=' + JSON.stringify(
+              links.filter(x => /alamy\.com/i.test(x.href) || /alamy/i.test(x.text)).slice(0, 120)
+            ));
+            console.log(label + '_INTERESTING_LINKS=' + JSON.stringify(
+              links.filter(x => /portugu|bento|train|woman|modelmayhem/i.test(x.text + ' ' + x.href)).slice(0, 120)
+            ));
+
+            const html = await page.content();
+            for (const needle of ['alamy.com', 'Portuguese woman', 'Sao Bento', 'São Bento']) {
+              const chunks = around(html, needle);
+              console.log(label + '_HTML_AROUND_' + needle.replace(/\W+/g,'_') + '=' + JSON.stringify(chunks));
+            }
+          }
 
           (async () => {
             const browser = await chromium.launch({ headless: true });
@@ -38,73 +97,67 @@ jobs:
               viewport: { width: 1440, height: 1000 },
               userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
             });
-            const page = await context.newPage();
-            page.setDefaultTimeout(30000);
 
             try {
-              await page.goto('https://www.alamy.com/', {
-                waitUntil: 'domcontentloaded',
-                timeout: 60000
-              });
-              console.log('HOME_URL=' + page.url());
-              console.log('HOME_TITLE=' + await page.title());
+              {
+                const page = await context.newPage();
+                page.setDefaultTimeout(30000);
+                const net = [];
+                page.on('response', async res => {
+                  const u = res.url();
+                  if (/alamy\.com/i.test(u) && /(image|search|visual|reverse|similar)/i.test(u)) {
+                    const ct = (res.headers()['content-type'] || '');
+                    const row = {status: res.status(), url: u, ct};
+                    if (/json/i.test(ct)) {
+                      try {
+                        const t = await res.text();
+                        row.body = t.slice(0, 12000);
+                      } catch {}
+                    }
+                    net.push(row);
+                  }
+                });
 
-              for (const sel of [
-                '#onetrust-accept-btn-handler',
-                'button:has-text("Accept all")',
-                'button:has-text("Accept All")'
-              ]) {
-                const el = page.locator(sel).first();
-                if (await el.isVisible().catch(() => false)) {
-                  await el.click({ force: true }).catch(() => {});
-                  break;
-                }
+                await page.goto('https://www.alamy.com/', {waitUntil:'domcontentloaded', timeout:60000});
+                await page.waitForTimeout(2000);
+                await acceptCookies(page);
+
+                const button = page.locator('button[data-testid="searchByImageLong"]').first();
+                await button.waitFor({state:'attached', timeout:30000});
+                await button.click({force:true});
+                const input = page.locator('input[type="file"]').first();
+                await input.waitFor({state:'attached', timeout:30000});
+                await input.setInputFiles(process.env.IMAGE_PATH);
+
+                await page.waitForTimeout(40000);
+                await acceptCookies(page);
+                await page.waitForTimeout(5000);
+                await dumpPage(page, 'ALAMY');
+                console.log('ALAMY_NETWORK=' + JSON.stringify(net.slice(-120)));
+                await page.close();
               }
 
-              const homeText = await page.locator('body').innerText().catch(() => '');
-              console.log('HOME_TEXT_BEGIN');
-              console.log(homeText.slice(0, 3000));
-              console.log('HOME_TEXT_END');
+              {
+                const page = await context.newPage();
+                page.setDefaultTimeout(30000);
+                const yurl = 'https://yandex.com/images/search?rpt=imageview&url=' + encodeURIComponent(process.env.RAW_URL);
+                await page.goto(yurl, {waitUntil:'domcontentloaded', timeout:60000}).catch(e => console.log('YANDEX_GOTO_ERROR=' + e));
+                await page.waitForTimeout(20000);
+                await dumpPage(page, 'YANDEX');
+                await page.close();
+              }
 
-              const button = page.locator('button[data-testid="searchByImageLong"]').first();
-              await button.waitFor({ state: 'attached', timeout: 30000 });
-              await button.click({ force: true });
-
-              const fileInput = page.locator('input[type="file"]').first();
-              await fileInput.waitFor({ state: 'attached', timeout: 30000 });
-              await fileInput.setInputFiles(process.env.IMAGE_PATH);
-
-              await page.waitForTimeout(15000);
-              await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
-              await page.waitForTimeout(5000);
-
-              console.log('RESULT_URL=' + page.url());
-              console.log('RESULT_TITLE=' + await page.title());
-
-              const resultText = await page.locator('body').innerText().catch(() => '');
-              console.log('RESULT_TEXT_BEGIN');
-              console.log(resultText.slice(0, 20000));
-              console.log('RESULT_TEXT_END');
-
-              const links = await page.locator('a').evaluateAll(nodes =>
-                nodes.map(a => ({
-                  text: (a.innerText || a.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 500),
-                  href: a.href || ''
-                }))
-                .filter(x => x.href && (x.href.includes('alamy.com') || x.text))
-                .slice(0, 300)
-              );
-              console.log('RESULT_LINKS_JSON=' + JSON.stringify(links));
-
-              const html = await page.content();
-              const ids = [...new Set(
-                (html.match(/\b(?:[A-Z0-9]{6,7}|\d{8,12})\b/g) || [])
-              )].slice(0, 300);
-              console.log('CANDIDATE_IDS=' + JSON.stringify(ids));
+              {
+                const page = await context.newPage();
+                page.setDefaultTimeout(30000);
+                const gurl = 'https://www.google.com/searchbyimage?image_url=' + encodeURIComponent(process.env.RAW_URL) + '&client=app';
+                await page.goto(gurl, {waitUntil:'domcontentloaded', timeout:60000}).catch(e => console.log('GOOGLE_GOTO_ERROR=' + e));
+                await page.waitForTimeout(15000);
+                await dumpPage(page, 'GOOGLE');
+                await page.close();
+              }
             } catch (err) {
               console.log('ERROR=' + (err && err.stack ? err.stack : String(err)));
-              const body = await page.locator('body').innerText().catch(() => '');
-              console.log('ERROR_PAGE_TEXT=' + body.slice(0, 10000));
               process.exitCode = 1;
             } finally {
               await browser.close();
