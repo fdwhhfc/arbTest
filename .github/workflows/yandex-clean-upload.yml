@@ -1,0 +1,124 @@
+name: Yandex clean local-upload reverse search
+
+on:
+  push:
+    paths:
+      - ".github/workflows/yandex-clean-upload.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install deps
+        run: |
+          pip install -q pillow requests
+          npm install playwright@1.55.0 >/dev/null 2>&1
+          npx playwright install --with-deps chromium >/dev/null 2>&1
+      - name: Build clean crops and upload directly to Yandex
+        run: |
+          python - <<'PY'
+          from PIL import Image
+          import requests, json, os, time
+
+          srcs={'color':'03_modelmayhem_color.png','bw':'04_modelmayhem_bw.png'}
+          variants=[]
+          for label,p in srcs.items():
+            im=Image.open(p).convert('RGB')
+            w,h=im.size
+            outs=[
+              (label+'-trim35', im.crop((0,0,w,max(80,h-35)))),
+              (label+'-trim50', im.crop((0,0,w,max(80,h-50)))),
+              (label+'-inner', im.crop((int(w*.04),0,int(w*.96),max(80,h-45))))
+            ]
+            for name,x in outs:
+              fn='/tmp/'+name+'.jpg'
+              x.save(fn,'JPEG',quality=93)
+              variants.append((name,fn))
+
+          sess=requests.Session()
+          sess.headers.update({'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36'})
+          params={
+            'rpt':'imageview',
+            'format':'json',
+            'request':'{"blocks":[{"block":"b-page_type_search-by-image__link"}]}'
+          }
+          urls=[]
+          for name,fn in variants:
+            try:
+              with open(fn,'rb') as f:
+                r=sess.post('https://yandex.com/images/search',params=params,files={'upfile':('blob',f,'image/jpeg')},timeout=45)
+              print('UPLOAD',name,r.status_code,r.url,'LEN',len(r.content))
+              print('UPLOAD_BODY',name,r.text[:1200].replace('\n',' '))
+              j=r.json()
+              q=j['blocks'][0]['params']['url']
+              base='https://yandex.com/images/search?'+q.lstrip('?')
+              urls.append({'name':name,'url':base})
+              print('SEARCH_URL',name,base)
+            except Exception as e:
+              print('UPLOAD_ERR',name,repr(e))
+          open('/tmp/yandex_urls.json','w').write(json.dumps(urls))
+          PY
+      - name: Parse Yandex sites and similar results
+        run: |
+          node <<'NODE'
+          const fs=require('fs');
+          const { chromium }=require('playwright');
+          const items=JSON.parse(fs.readFileSync('/tmp/yandex_urls.json','utf8'));
+
+          function getState(states){
+            for(const s of states){try{const j=JSON.parse(s);if(j?.initialState)return j.initialState}catch{}}
+          }
+          function collect(init){
+            const out=[];
+            const ents=init?.serpList?.items?.entities||{};
+            for(const e of Object.values(ents)) out.push({
+              pos:e.pos??null,title:e.snippet?.title||e.alt||'',domain:e.snippet?.domain||'',
+              pageUrl:e.snippet?.url||'',origUrl:e.origUrl||e.viewerData?.preview?.[0]?.url||'',
+              w:e.origWidth||e.width||null,h:e.origHeight||e.height||null
+            });
+            const sites=init?.cbirSites?.sites||[];
+            for(const [i,e] of sites.entries()) out.push({
+              pos:'site-'+i,title:e.title||'',domain:e.domain||'',
+              pageUrl:e.url||'',origUrl:e.originalImage?.url||'',w:e.originalImage?.width||null,h:e.originalImage?.height||null
+            });
+            return out;
+          }
+
+          (async()=>{
+            const b=await chromium.launch({headless:true});
+            const c=await b.newContext({viewport:{width:1280,height:850},userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36'});
+            for(const x of items){
+              for(const mode of ['sites','similar']){
+                for(let p=0;p<(mode==='sites'?3:6);p++){
+                  const pg=await c.newPage();
+                  const u=new URL(x.url);
+                  u.searchParams.set('cbir_page',mode);
+                  u.searchParams.set('p',String(p));
+                  await pg.goto(u.toString(),{waitUntil:'domcontentloaded',timeout:50000}).catch(()=>{});
+                  await pg.waitForTimeout(1400);
+                  const states=await pg.locator('[data-state]').evaluateAll(ns=>ns.map(n=>n.getAttribute('data-state')).filter(Boolean)).catch(()=>[]);
+                  const arr=collect(getState(states));
+                  const mm=arr.filter(v=>/modelmayhem|photos\.modelmayhem/i.test(JSON.stringify(v)));
+                  const exactish=arr.filter(v=>/alamy|flickr/i.test(JSON.stringify(v)));
+                  if(mm.length) console.log('MM='+JSON.stringify({name:x.name,mode,p,mm}));
+                  if(exactish.length) console.log('AUX='+JSON.stringify({name:x.name,mode,p,aux:exactish.slice(0,20)}));
+                  if(mode==='sites' && p===0) console.log('SITES0='+JSON.stringify({name:x.name,count:arr.length,items:arr.slice(0,40)}));
+                  await pg.close();
+                }
+              }
+            }
+            await b.close();
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
