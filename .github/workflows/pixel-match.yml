@@ -28,15 +28,13 @@ jobs:
             'target_color':'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/03_modelmayhem_color.png',
             'target_bw':'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/04_modelmayhem_bw.png',
             'alamy':'https://c8.alamy.com/comp/2BXX7EM/a-portuguese-woman-waits-in-the-so-bento-train-station-in-porto-portugal-2BXX7EM.jpg',
-            'c1':'https://photos.modelmayhem.com/photos/161027/22/5812e01ee2634_m.jpg',
-            'c2':'https://photos.modelmayhem.com/photos/141014/10/543d584e97aec.jpg',
-            'c3':'https://photos.modelmayhem.com/photos/160914/09/57d9792f9401a.jpg',
-            'c4':'https://photos.modelmayhem.com/photos/120517/13/4fb5652307f15_m.jpg',
-            'c5':'https://photos.modelmayhem.com/avatars/4/7/1/6/9/3/2/63aaf2873a1ba_m.jpg',
-            'b1':'https://photos.modelmayhem.com/photos/120622/17/4fe50a1bc5b30.jpg',
-            'b2':'https://photos.modelmayhem.com/photos/100912/19/4c8d8df6c2430_m.jpg',
-            'b3':'https://photos.modelmayhem.com/photos/140429/21/536078b4a9c3f.jpg',
-            'b4':'https://photos.modelmayhem.com/photos/131110/22/528079db22a50_m.jpg'
+            'mm_color_p5':'https://photos.modelmayhem.com/photos/160227/12/56d20ad501480.jpg',
+            'mm_color_p17':'https://photos.modelmayhem.com/photos/171107/15/5a023fac5d6f1.jpg',
+            'mm_color_avatar':'https://photos.modelmayhem.com/avatars/4/2/3/2/2/0/3/5a02417721fed_m.jpg',
+            'mm_bw_p1':'https://photos.modelmayhem.com/photos/100912/19/4c8d8df6c2430_m.jpg',
+            'mm_bw_p7':'https://photos.modelmayhem.com/photos/120622/17/4fe50a1bc5b30.jpg',
+            'mm_bw_avatar':'https://photos.modelmayhem.com/avatars/2/0/2/8/4/7/6/526abb09c20fe_m.jpg',
+            'mm_bw_p18':'https://photos.modelmayhem.com/photos/161208/19/584a258cc2a8a_m.jpg'
           }
           def get(u):
             r=requests.get(u,headers=UA,timeout=25); r.raise_for_status()
