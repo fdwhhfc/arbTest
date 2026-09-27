@@ -1,4 +1,4 @@
-name: Google Lens crop research
+name: TinEye crop research
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
 jobs:
   research:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 8
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -21,7 +21,7 @@ jobs:
         run: |
           npm install playwright@1.55.0
           npx playwright install --with-deps chromium
-      - name: Query Google Lens for both crops
+      - name: Query TinEye for both crops
         run: |
           node <<'NODE'
           const { chromium } = require('playwright');
@@ -36,29 +36,18 @@ jobs:
                 viewport:{width:1440,height:1000},
                 userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
               });
-              const url='https://lens.google.com/uploadbyurl?url='+encodeURIComponent(img);
+              const url='https://tineye.com/search?url='+encodeURIComponent(img)+'&sort=score&order=desc';
               await page.goto(url,{waitUntil:'domcontentloaded',timeout:60000}).catch(e=>console.log('GOTO_ERR='+label+' '+e));
-              await page.waitForTimeout(20000);
+              await page.waitForTimeout(15000);
               console.log('FINAL='+label+' '+page.url());
               console.log('TITLE='+label+' '+await page.title().catch(()=>''));
               const body=await page.locator('body').innerText().catch(()=>'');
-              console.log('BODY='+label+' '+body.slice(0,20000).replace(/\n/g,' | '));
+              console.log('BODY='+label+' '+body.slice(0,30000).replace(/\n/g,' | '));
               const links=await page.locator('a').evaluateAll(ns=>ns.map(a=>({
                 text:(a.innerText||a.textContent||'').trim().replace(/\s+/g,' ').slice(0,300),
                 href:a.href||''
               })).filter(x=>x.href));
-              const keep=links.filter(x=>/modelmayhem|alamy|instagram|facebook|pinterest|lens|googleusercontent|gstatic/i.test(x.href+' '+x.text));
-              console.log('LINKS='+label+' '+JSON.stringify(keep.slice(0,300)));
-              const html=await page.content();
-              const hits=[];
-              for(const term of ['modelmayhem','alamy.com','photos.modelmayhem.com']){
-                let i=0,n=0,low=html.toLowerCase();
-                while((i=low.indexOf(term,i))>=0 && n<30){
-                  hits.push(html.slice(Math.max(0,i-1000),Math.min(html.length,i+2500)));
-                  i+=term.length;n++;
-                }
-              }
-              console.log('HTML_HITS='+label+' '+JSON.stringify(hits.slice(0,50)));
+              console.log('LINKS='+label+' '+JSON.stringify(links.slice(0,500)));
               await page.close();
             }
             await browser.close();
