@@ -1,4 +1,4 @@
-name: Trace exact Alamy image into ModelMayhem
+name: Yandex four-photo ModelMayhem search
 
 on:
   push:
@@ -10,51 +10,85 @@ permissions:
   contents: read
 
 jobs:
-  trace:
+  research:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 12
     steps:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
       - name: Install Playwright
         run: |
-          npm install playwright@1.55.0 >/dev/null 2>&1
-          npx playwright install --with-deps chromium >/dev/null 2>&1
-      - name: Search exact Alamy image with ModelMayhem filter
+          npm install playwright@1.55.0
+          npx playwright install --with-deps chromium
+      - name: Search Yandex with ModelMayhem four-photo filters
         run: |
           node <<'NODE'
           const { chromium } = require('playwright');
-          const img='https://c8.alamy.com/comp/2BXX7EM/a-portuguese-woman-waits-in-the-so-bento-train-station-in-porto-portugal-2BXX7EM.jpg';
-          function init(states){for(const s of states){try{const j=JSON.parse(s);if(j?.initialState)return j.initialState}catch{}}}
-          function items(i){
-            const out=[];
-            for(const e of Object.values(i?.serpList?.items?.entities||{})){
-              out.push({pos:e.pos??null,title:e.snippet?.title||e.alt||'',domain:e.snippet?.domain||'',pageUrl:e.snippet?.url||'',origUrl:e.origUrl||e.viewerData?.preview?.[0]?.url||'',w:e.origWidth||e.width||null,h:e.origHeight||e.height||null});
+          const imgs={
+            color:'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/03_modelmayhem_color.png',
+            bw:'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/04_modelmayhem_bw.png'
+          };
+          const texts=[
+            'site:modelmayhem.com "4 Photos"',
+            '"4 Photos" "Model Mayhem"',
+            'site:modelmayhem.com "View Photos (4)"',
+            'site:modelmayhem.com Portugal "4 Photos"'
+          ];
+
+          function extract(states){
+            for(const s of states){
+              try{
+                const j=JSON.parse(s);
+                if(j?.initialState) return j.initialState;
+              }catch{}
             }
-            for(const [k,e] of (i?.cbirSimilar?.thumbs||[]).entries()){
-              out.push({pos:'thumb-'+k,title:e.title||'',domain:e.domain||'',pageUrl:e.linkUrl||e.url||'',origUrl:e.imageUrl||'',w:e.width||null,h:e.height||null});
+          }
+          function items(init){
+            const out=[];
+            const ents=init?.serpList?.items?.entities||{};
+            for(const e of Object.values(ents)){
+              out.push({
+                pos:e.pos??null,
+                title:e.snippet?.title||e.alt||'',
+                domain:e.snippet?.domain||'',
+                pageUrl:e.snippet?.url||'',
+                origUrl:e.origUrl||e.viewerData?.preview?.[0]?.url||'',
+                width:e.origWidth||e.width||null,
+                height:e.origHeight||e.height||null
+              });
             }
             return out;
           }
-          async function run(ctx,p,mode,textq){
-            const pg=await ctx.newPage();
-            const q=new URLSearchParams({rpt:'imageview',cbir_page:mode,url:img,p:String(p)});
-            if(textq) q.set('text','site:modelmayhem.com');
-            await pg.goto('https://yandex.com/images/search?'+q.toString(),{waitUntil:'domcontentloaded',timeout:30000}).catch(()=>{});
-            await pg.waitForTimeout(1000);
-            const st=await pg.locator('[data-state]').evaluateAll(ns=>ns.map(n=>n.getAttribute('data-state')).filter(Boolean)).catch(()=>[]);
-            const arr=items(init(st));
-            const mm=arr.filter(x=>/modelmayhem|photos\.modelmayhem/i.test(JSON.stringify(x)));
-            if(mm.length) console.log('HIT='+JSON.stringify({p,mode,textq,mm}));
-            await pg.close();
+
+          async function one(context,label,img,text,p){
+            const page=await context.newPage();
+            const params=new URLSearchParams({rpt:'imageview',cbir_page:'similar',url:img,text,p:String(p)});
+            const url='https://yandex.com/images/search?'+params.toString();
+            await page.goto(url,{waitUntil:'domcontentloaded',timeout:60000}).catch(()=>{});
+            await page.waitForTimeout(4500);
+            const states=await page.locator('[data-state]').evaluateAll(ns=>ns.map(n=>n.getAttribute('data-state')).filter(Boolean));
+            const arr=items(extract(states)).filter(x=>/modelmayhem/i.test(JSON.stringify(x)));
+            if(arr.length) console.log('HIT='+JSON.stringify({label,text,p,items:arr}));
+            await page.close();
           }
+
           (async()=>{
-            const b=await chromium.launch({headless:true});
-            const c=await b.newContext({viewport:{width:1280,height:800},userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36'});
-            for(let p=0;p<20;p++) await run(c,p,'similar',false);
-            for(let p=0;p<12;p++) await run(c,p,'similar',true);
-            for(let p=0;p<8;p++) await run(c,p,'sites',false);
-            await b.close();
+            const browser=await chromium.launch({headless:true});
+            const context=await browser.newContext({
+              viewport:{width:1280,height:850},
+              userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
+            });
+            try{
+              for(const [label,img] of Object.entries(imgs)){
+                for(const text of texts){
+                  for(let p=0;p<10;p+=4){
+                    const batch=[];
+                    for(let q=p;q<Math.min(10,p+4);q++) batch.push(one(context,label,img,text,q));
+                    await Promise.all(batch);
+                  }
+                }
+              }
+            }finally{await browser.close();}
           })().catch(e=>{console.error(e);process.exit(1)});
           NODE
