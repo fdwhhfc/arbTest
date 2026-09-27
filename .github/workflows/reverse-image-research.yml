@@ -1,4 +1,4 @@
-name: Yandex four-photo ModelMayhem search
+name: Trace exact ModelMayhem page for crop 01
 
 on:
   push:
@@ -10,85 +10,56 @@ permissions:
   contents: read
 
 jobs:
-  research:
+  trace:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 5
     steps:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
       - name: Install Playwright
         run: |
-          npm install playwright@1.55.0
-          npx playwright install --with-deps chromium
-      - name: Search Yandex with ModelMayhem four-photo filters
+          npm install playwright@1.55.0 >/dev/null 2>&1
+          npx playwright install --with-deps chromium >/dev/null 2>&1
+      - name: Parse Yandex exact sites
         run: |
           node <<'NODE'
-          const { chromium } = require('playwright');
-          const imgs={
-            color:'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/03_modelmayhem_color.png',
-            bw:'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/04_modelmayhem_bw.png'
-          };
-          const texts=[
-            'site:modelmayhem.com "4 Photos"',
-            '"4 Photos" "Model Mayhem"',
-            'site:modelmayhem.com "View Photos (4)"',
-            'site:modelmayhem.com Portugal "4 Photos"'
-          ];
-
-          function extract(states){
-            for(const s of states){
-              try{
-                const j=JSON.parse(s);
-                if(j?.initialState) return j.initialState;
-              }catch{}
+          const { chromium }=require('playwright');
+          const img='https://raw.githubusercontent.com/fdwhhfc/arbTest/master/01_alamy_bw_top.png';
+          function init(states){for(const s of states){try{const j=JSON.parse(s);if(j?.initialState)return j.initialState}catch{}}}
+          function walk(x,path='root',out=[]){
+            if(x==null)return out;
+            if(typeof x==='string'){
+              if(/modelmayhem|photos\.modelmayhem/i.test(x)) out.push({path,value:x.slice(0,1200)});
+              return out;
             }
-          }
-          function items(init){
-            const out=[];
-            const ents=init?.serpList?.items?.entities||{};
-            for(const e of Object.values(ents)){
-              out.push({
-                pos:e.pos??null,
-                title:e.snippet?.title||e.alt||'',
-                domain:e.snippet?.domain||'',
-                pageUrl:e.snippet?.url||'',
-                origUrl:e.origUrl||e.viewerData?.preview?.[0]?.url||'',
-                width:e.origWidth||e.width||null,
-                height:e.origHeight||e.height||null
-              });
-            }
+            if(Array.isArray(x)){x.forEach((v,i)=>walk(v,path+'['+i+']',out));return out;}
+            if(typeof x==='object'){for(const [k,v] of Object.entries(x))walk(v,path+'.'+k,out);}
             return out;
           }
-
-          async function one(context,label,img,text,p){
-            const page=await context.newPage();
-            const params=new URLSearchParams({rpt:'imageview',cbir_page:'similar',url:img,text,p:String(p)});
-            const url='https://yandex.com/images/search?'+params.toString();
-            await page.goto(url,{waitUntil:'domcontentloaded',timeout:60000}).catch(()=>{});
-            await page.waitForTimeout(4500);
-            const states=await page.locator('[data-state]').evaluateAll(ns=>ns.map(n=>n.getAttribute('data-state')).filter(Boolean));
-            const arr=items(extract(states)).filter(x=>/modelmayhem/i.test(JSON.stringify(x)));
-            if(arr.length) console.log('HIT='+JSON.stringify({label,text,p,items:arr}));
-            await page.close();
-          }
-
           (async()=>{
-            const browser=await chromium.launch({headless:true});
-            const context=await browser.newContext({
-              viewport:{width:1280,height:850},
-              userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
-            });
-            try{
-              for(const [label,img] of Object.entries(imgs)){
-                for(const text of texts){
-                  for(let p=0;p<10;p+=4){
-                    const batch=[];
-                    for(let q=p;q<Math.min(10,p+4);q++) batch.push(one(context,label,img,text,q));
-                    await Promise.all(batch);
-                  }
-                }
+            const b=await chromium.launch({headless:true});
+            const p=await b.newPage({viewport:{width:1280,height:900},userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137 Safari/537.36'});
+            const url='https://yandex.com/images/search?rpt=imageview&cbir_page=sites&url='+encodeURIComponent(img);
+            await p.goto(url,{waitUntil:'domcontentloaded',timeout:60000});
+            await p.waitForTimeout(6000);
+            const states=await p.locator('[data-state]').evaluateAll(ns=>ns.map(n=>n.getAttribute('data-state')).filter(Boolean));
+            const st=init(states);
+            const hits=walk(st);
+            console.log('HITS='+JSON.stringify(hits));
+            const html=await p.content();
+            const snippets=[];
+            const low=html.toLowerCase();
+            for(const term of ['modelmayhem.com','photos.modelmayhem.com']){
+              let i=0,n=0;
+              while((i=low.indexOf(term,i))>=0&&n<30){
+                snippets.push(html.slice(Math.max(0,i-1500),Math.min(html.length,i+3500)));
+                i+=term.length;n++;
               }
-            }finally{await browser.close();}
+            }
+            console.log('HTML_HITS='+JSON.stringify(snippets));
+            const links=await p.locator('a').evaluateAll(ns=>ns.map(a=>({text:(a.innerText||a.textContent||'').trim().replace(/\s+/g,' ').slice(0,300),href:a.href||''})).filter(x=>/modelmayhem/i.test(x.href+' '+x.text)));
+            console.log('LINKS='+JSON.stringify(links));
+            await b.close();
           })().catch(e=>{console.error(e);process.exit(1)});
           NODE
