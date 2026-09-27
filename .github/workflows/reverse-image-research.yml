@@ -1,4 +1,4 @@
-name: Search ModelMayhem crop sources
+name: Google Lens crop research
 
 on:
   push:
@@ -21,78 +21,46 @@ jobs:
         run: |
           npm install playwright@1.55.0
           npx playwright install --with-deps chromium
-      - name: Query Yandex metadata for both crops
+      - name: Query Google Lens for both crops
         run: |
           node <<'NODE'
           const { chromium } = require('playwright');
-
           const images = {
-            color: 'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/03_modelmayhem_color.png',
-            bw: 'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/04_modelmayhem_bw.png'
+            color:'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/03_modelmayhem_color.png',
+            bw:'https://raw.githubusercontent.com/fdwhhfc/arbTest/master/04_modelmayhem_bw.png'
           };
-
-          function findInitialState(pageStates) {
-            for (const s of pageStates) {
-              try {
-                const j = JSON.parse(s);
-                if (j && j.initialState) return j.initialState;
-              } catch {}
-            }
-            return null;
-          }
-
-          async function query(browser, label, imageUrl, cbirPage, extra='') {
-            const page = await browser.newPage({
-              viewport:{width:1440,height:1000},
-              userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
-            });
-            const url='https://yandex.com/images/search?rpt=imageview&cbir_page='+cbirPage+'&url='+encodeURIComponent(imageUrl)+extra;
-            await page.goto(url,{waitUntil:'domcontentloaded',timeout:60000}).catch(e=>console.log('GOTO_ERR',label,cbirPage,String(e)));
-            await page.waitForTimeout(12000);
-            const states=await page.locator('[data-state]').evaluateAll(ns=>ns.map(n=>n.getAttribute('data-state')).filter(Boolean));
-            const init=findInitialState(states);
-            const out=[];
-            if (init?.serpList?.items?.entities) {
-              for (const e of Object.values(init.serpList.items.entities)) {
-                out.push({
-                  pos:e.pos,
-                  title:e.snippet?.title || e.alt || '',
-                  domain:e.snippet?.domain || '',
-                  pageUrl:e.snippet?.url || '',
-                  origUrl:e.origUrl || e.viewerData?.preview?.[0]?.url || '',
-                  width:e.origWidth || e.width || null,
-                  height:e.origHeight || e.height || null
-                });
-              }
-            }
-            if (init?.cbirSimilar?.thumbs) {
-              for (const [i,e] of init.cbirSimilar.thumbs.entries()) {
-                out.push({
-                  pos:'thumb-'+i,
-                  title:e.title||'',
-                  domain:'',
-                  pageUrl:e.linkUrl||'',
-                  origUrl:e.imageUrl||'',
-                  width:e.width||null,
-                  height:e.height||null
-                });
-              }
-            }
-            console.log('RESULT='+JSON.stringify({label,cbirPage,finalUrl:page.url(),count:out.length,items:out.slice(0,150)}));
-            await page.close();
-          }
-
           (async()=>{
             const browser=await chromium.launch({headless:true});
-            try {
-              for (const [label,url] of Object.entries(images)) {
-                await query(browser,label,url,'sites');
-                await query(browser,label,url,'similar');
-                await query(browser,label,url,'similar','&p=1');
-                await query(browser,label,url,'similar','&p=2');
+            for(const [label,img] of Object.entries(images)){
+              const page=await browser.newPage({
+                viewport:{width:1440,height:1000},
+                userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
+              });
+              const url='https://lens.google.com/uploadbyurl?url='+encodeURIComponent(img);
+              await page.goto(url,{waitUntil:'domcontentloaded',timeout:60000}).catch(e=>console.log('GOTO_ERR='+label+' '+e));
+              await page.waitForTimeout(20000);
+              console.log('FINAL='+label+' '+page.url());
+              console.log('TITLE='+label+' '+await page.title().catch(()=>''));
+              const body=await page.locator('body').innerText().catch(()=>'');
+              console.log('BODY='+label+' '+body.slice(0,20000).replace(/\n/g,' | '));
+              const links=await page.locator('a').evaluateAll(ns=>ns.map(a=>({
+                text:(a.innerText||a.textContent||'').trim().replace(/\s+/g,' ').slice(0,300),
+                href:a.href||''
+              })).filter(x=>x.href));
+              const keep=links.filter(x=>/modelmayhem|alamy|instagram|facebook|pinterest|lens|googleusercontent|gstatic/i.test(x.href+' '+x.text));
+              console.log('LINKS='+label+' '+JSON.stringify(keep.slice(0,300)));
+              const html=await page.content();
+              const hits=[];
+              for(const term of ['modelmayhem','alamy.com','photos.modelmayhem.com']){
+                let i=0,n=0,low=html.toLowerCase();
+                while((i=low.indexOf(term,i))>=0 && n<30){
+                  hits.push(html.slice(Math.max(0,i-1000),Math.min(html.length,i+2500)));
+                  i+=term.length;n++;
+                }
               }
-            } finally {
-              await browser.close();
+              console.log('HTML_HITS='+label+' '+JSON.stringify(hits.slice(0,50)));
+              await page.close();
             }
+            await browser.close();
           })().catch(e=>{console.error(e);process.exit(1)});
           NODE
