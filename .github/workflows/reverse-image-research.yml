@@ -1,4 +1,4 @@
-name: PBase metadata research
+name: PBase Porto metadata research
 
 on:
   push:
@@ -14,83 +14,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fetch public PBase gallery metadata
+      - name: Fetch Porto image IDs and EXIF
         run: |
           node <<'NODE'
-          const urls = [
-            'https://pbase.com/image_expo/margarida',
-            'https://pbase.com/image_expo/porto',
-            'https://pbase.com/image_expo/portraits'
-          ];
-
           async function get(url) {
-            const r = await fetch(url, {
-              headers: {'user-agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/137 Safari/537.36'}
-            });
+            const r = await fetch(url,{headers:{'user-agent':'Mozilla/5.0'}});
             const t = await r.text();
-            console.log('FETCH', url, r.status, 'LEN', t.length);
+            console.log('FETCH',url,r.status,'LEN',t.length);
             return t;
           }
-
-          function decode(s) {
-            return s.replace(/&amp;/g,'&').replace(/&#39;/g,"'").replace(/&quot;/g,'"')
-              .replace(/&lt;/g,'<').replace(/&gt;/g,'>');
-          }
-
+          function decode(s){return s.replace(/&amp;/g,'&').replace(/&#39;/g,"'").replace(/&quot;/g,'"');}
           (async()=>{
-            const gallery = await get(urls[0]);
-            const ids = [...new Set(
-              [...gallery.matchAll(/href=["'](?:https?:\/\/pbase\.com)?\/?(?:image\/|image_expo\/image\/)(\d+)[^"']*["']/gi)]
-                .map(m=>m[1])
-            )];
-            console.log('MARGARIDA_IMAGE_IDS=' + JSON.stringify(ids));
-
-            const hrefs = [...new Set(
-              [...gallery.matchAll(/href=["']([^"']+)["']/gi)].map(m=>decode(m[1]))
-            )].filter(x => /image\/\d+|margarida|modelmayhem|instagram|facebook|image-expo/i.test(x));
-            console.log('MARGARIDA_INTERESTING_HREFS=' + JSON.stringify(hrefs.slice(0,300)));
-
-            const imgs = [...new Set(
-              [...gallery.matchAll(/(?:src|href)=["']([^"']+\.(?:jpg|jpeg|png)(?:\?[^"']*)?)["']/gi)].map(m=>decode(m[1]))
-            )];
-            console.log('MARGARIDA_IMAGE_URLS=' + JSON.stringify(imgs.slice(0,300)));
-
-            for (const id of ids.slice(0,80)) {
-              const url = 'https://pbase.com/image/' + id;
-              const html = await get(url);
-              const text = html.replace(/<script[\s\S]*?<\/script>/gi,' ')
-                               .replace(/<style[\s\S]*?<\/style>/gi,' ')
-                               .replace(/<[^>]+>/g,' ')
-                               .replace(/&nbsp;/g,' ')
-                               .replace(/&amp;/g,'&')
-                               .replace(/\s+/g,' ')
-                               .trim();
-
-              const title = (html.match(/<title>([\s\S]*?)<\/title>/i)||[])[1] || '';
-              const meta = {};
-              const patterns = {
-                captured:/\b(\d{1,2}-[A-Z]{3}-\d{4}|\d{1,2}-[A-Za-z]{3}-\d{4})\b/,
-                camera:/(Canon EOS[^<\n]{0,80}|Nikon[^<\n]{0,80}|SONY[^<\n]{0,80}|FUJIFILM[^<\n]{0,80})/i,
-                exif:/((?:1\/\d+|\d+(?:\.\d+)?)s\s+f\/\d+(?:\.\d+)?[^<]{0,100}iso\d+)/i,
-                modelmayhem:/(https?:\/\/[^"'\s<]*modelmayhem[^"'\s<]*)/i,
-                instagram:/(https?:\/\/[^"'\s<]*instagram[^"'\s<]*)/i,
-                location:/(?:Location|location)[:\s<]+([^<]{1,120})/i
-              };
-              for (const [k,re] of Object.entries(patterns)) {
-                const m = html.match(re) || text.match(re);
-                if (m) meta[k] = decode(m[1] || m[0]);
-              }
-              const links = [...new Set([...html.matchAll(/href=["']([^"']+)["']/gi)].map(m=>decode(m[1])))]
-                .filter(x => /modelmayhem|instagram|facebook|image-expo|pbase\.com\/image/i.test(x));
-              console.log('IMAGE_META=' + JSON.stringify({id,url,title:decode(title),meta,links:links.slice(0,50),text:text.slice(0,2500)}));
+            const html=await get('https://pbase.com/image_expo/porto');
+            const ids=[...new Set([...html.matchAll(/href=["'](?:https?:\/\/pbase\.com)?\/?(?:image\/|image_expo\/image\/)(\d+)[^"']*["']/gi)].map(m=>m[1]))];
+            console.log('PORTO_IMAGE_IDS='+JSON.stringify(ids));
+            for(const id of ids.slice(0,50)){
+              const page=await get('https://pbase.com/image/'+id+'&exif=Y');
+              const text=page.replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ')
+                .replace(/<[^>]+>/g,' ').replace(/&nbsp;/g,' ').replace(/&amp;/g,'&').replace(/\s+/g,' ').trim();
+              const dt=(text.match(/Date\/Time\s+(\d{1,2}-[A-Za-z]{3}-\d{4}\s+\d{2}:\d{2}:\d{2})/i)||[])[1]||'';
+              const title=(page.match(/<title>([\s\S]*?)<\/title>/i)||[])[1]||'';
+              const cam=(text.match(/Make\s+([^ ]+)\s+Model\s+([^ ]+(?:\s+[^ ]+){0,3})\s+Flash Used/i)||[]);
+              console.log('PORTO_META='+JSON.stringify({id,title:decode(title),dateTime:dt,text:text.slice(0,900)}));
             }
-
-            const porto = await get(urls[1]);
-            const portoDates = [...new Set([...porto.matchAll(/\b\d{1,2}-[A-Z]{3}-\d{4}\b/g)].map(m=>m[0]))];
-            console.log('PORTO_DATES=' + JSON.stringify(portoDates.slice(0,100)));
-
-            const root = await get(urls[2]);
-            const mpos = root.toLowerCase().indexOf('margarida');
-            if (mpos >= 0) console.log('PORTRAITS_AROUND_MARGARIDA=' + root.slice(Math.max(0,mpos-2500),mpos+3500));
-          })().catch(e => { console.error(e); process.exit(1); });
+          })().catch(e=>{console.error(e);process.exit(1)});
           NODE
